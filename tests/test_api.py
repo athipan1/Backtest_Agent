@@ -42,3 +42,36 @@ def test_backtest_run_endpoint():
     assert payload["status"] == "success"
     assert payload["data"]["strategy"] == "sma_crossover"
     assert payload["data"]["metrics"]["initial_equity"] == 100000
+
+
+def test_backtest_compare_endpoint():
+    bars = [
+        {"timestamp": "2026-01-01T00:00:00Z", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 1000},
+        {"timestamp": "2026-01-02T00:00:00Z", "open": 11, "high": 12, "low": 10, "close": 11, "volume": 1000},
+        {"timestamp": "2026-01-03T00:00:00Z", "open": 12, "high": 13, "low": 11, "close": 12, "volume": 1000},
+        {"timestamp": "2026-01-04T00:00:00Z", "open": 13, "high": 14, "low": 12, "close": 13, "volume": 1000},
+        {"timestamp": "2026-01-05T00:00:00Z", "open": 12, "high": 13, "low": 11, "close": 12, "volume": 1000},
+        {"timestamp": "2026-01-06T00:00:00Z", "open": 11, "high": 12, "low": 10, "close": 11, "volume": 1000},
+        {"timestamp": "2026-01-07T00:00:00Z", "open": 12, "high": 13, "low": 11, "close": 12, "volume": 1000}
+    ]
+    response = client.post(
+        "/backtest/compare",
+        json={
+            "symbols": ["AAPL"],
+            "initial_equity": 100000,
+            "fee_bps": 0,
+            "slippage_bps": 0,
+            "bars": {"AAPL": bars},
+            "candidates": [
+                {"name": "fast", "fast_window": 2, "slow_window": 3},
+                {"name": "slow", "fast_window": 3, "slow_window": 5}
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["data"]["symbols"] == ["AAPL"]
+    assert len(payload["data"]["ranked_results"]) == 2
+    assert payload["data"]["best"]["rank"] == 1

@@ -75,3 +75,34 @@ def test_backtest_compare_endpoint():
     assert payload["data"]["symbols"] == ["AAPL"]
     assert len(payload["data"]["ranked_results"]) == 2
     assert payload["data"]["best"]["rank"] == 1
+
+
+def test_backtest_walk_forward_endpoint():
+    bars = [
+        {"timestamp": f"2026-01-{index:02d}T00:00:00Z", "open": 10 + index % 5, "high": 12 + index % 5, "low": 9 + index % 5, "close": 10 + index % 5, "volume": 1000}
+        for index in range(1, 21)
+    ]
+    response = client.post(
+        "/backtest/walk-forward",
+        json={
+            "symbols": ["AAPL"],
+            "initial_equity": 100000,
+            "train_ratio": 0.6,
+            "min_train_bars": 5,
+            "min_test_bars": 3,
+            "fee_bps": 0,
+            "slippage_bps": 0,
+            "bars": {"AAPL": bars},
+            "candidates": [
+                {"name": "fast", "fast_window": 2, "slow_window": 3},
+                {"name": "slow", "fast_window": 3, "slow_window": 5}
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["data"]["symbols"] == ["AAPL"]
+    assert payload["data"]["selected_candidate"]["rank"] == 1
+    assert payload["data"]["test_result"] is not None

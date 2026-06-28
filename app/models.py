@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 T = TypeVar("T")
+StrategyName = Literal["sma_crossover", "trend_following", "mean_reversion", "breakout"]
 
 
 class StandardAgentResponse(BaseModel, Generic[T]):
@@ -43,7 +44,7 @@ class BacktestRunRequest(BaseModel):
     symbols: List[str] = Field(min_length=1)
     initial_equity: float = Field(gt=0)
     bars: Dict[str, List[PriceBar]]
-    strategy: Literal["sma_crossover"] = "sma_crossover"
+    strategy: StrategyName = "sma_crossover"
     fast_window: int = Field(default=3, ge=1)
     slow_window: int = Field(default=5, ge=2)
     risk_per_trade: float = Field(default=0.01, gt=0, le=1)
@@ -66,7 +67,7 @@ class BacktestRunRequest(BaseModel):
 
 class StrategyCandidate(BaseModel):
     name: str = Field(default="sma_crossover")
-    strategy: Literal["sma_crossover"] = "sma_crossover"
+    strategy: StrategyName = "sma_crossover"
     fast_window: int = Field(default=3, ge=1)
     slow_window: int = Field(default=5, ge=2)
     max_position_pct: Optional[float] = Field(default=None, gt=0, le=1)

@@ -64,6 +64,43 @@ class BacktestRunRequest(BaseModel):
         return self
 
 
+class StrategyCandidate(BaseModel):
+    name: str = Field(default="sma_crossover")
+    strategy: Literal["sma_crossover"] = "sma_crossover"
+    fast_window: int = Field(default=3, ge=1)
+    slow_window: int = Field(default=5, ge=2)
+    max_position_pct: Optional[float] = Field(default=None, gt=0, le=1)
+    fee_bps: Optional[float] = Field(default=None, ge=0)
+    slippage_bps: Optional[float] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_candidate_windows(self) -> "StrategyCandidate":
+        if self.fast_window >= self.slow_window:
+            raise ValueError("fast_window must be smaller than slow_window")
+        return self
+
+
+class BacktestCompareRequest(BaseModel):
+    symbols: List[str] = Field(min_length=1)
+    initial_equity: float = Field(gt=0)
+    bars: Dict[str, List[PriceBar]]
+    candidates: List[StrategyCandidate] = Field(min_length=1, max_length=25)
+    risk_per_trade: float = Field(default=0.01, gt=0, le=1)
+    max_position_pct: float = Field(default=0.10, gt=0, le=1)
+    fee_bps: float = Field(default=10, ge=0)
+    slippage_bps: float = Field(default=5, ge=0)
+    use_risk_agent: bool = True
+    emergency_halt: bool = False
+    max_trades_per_day: int = Field(default=5, ge=1)
+
+    @model_validator(mode="after")
+    def validate_compare_bars(self) -> "BacktestCompareRequest":
+        missing = [symbol for symbol in self.symbols if symbol.upper() not in {key.upper() for key in self.bars}]
+        if missing:
+            raise ValueError(f"missing bars for symbols: {missing}")
+        return self
+
+
 class RiskCheckPayload(BaseModel):
     account_id: str = "backtest"
     symbol: str
@@ -147,3 +184,20 @@ class BacktestRunResult(BaseModel):
     equity_curve: List[EquityPoint]
     risk_rejections: List[RiskRejection] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+
+
+class StrategyComparisonResult(BaseModel):
+    rank: int
+    name: str
+    strategy: str
+    fast_window: int
+    slow_window: int
+    score: float
+    metrics: BacktestMetrics
+    warnings: List[str] = Field(default_factory=list)
+
+
+class BacktestCompareResult(BaseModel):
+    symbols: List[str]
+    ranked_results: List[StrategyComparisonResult]
+    best: Optional[StrategyComparisonResult] = None

@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from app.engine import sma
 from app.models import PriceBar
 
 StrategyName = Literal["sma_crossover", "trend_following", "mean_reversion", "breakout"]
 Signal = Literal["buy", "sell", "hold"]
 
 
+def moving_average(values: List[float], window: int) -> Optional[float]:
+    if len(values) < window:
+        return None
+    return sum(values[-window:]) / window
+
+
 def sma_crossover_signal(closes: List[float], fast_window: int, slow_window: int) -> Signal:
-    fast = sma(closes, fast_window)
-    slow = sma(closes, slow_window)
+    fast = moving_average(closes, fast_window)
+    slow = moving_average(closes, slow_window)
     if fast is None or slow is None:
         return "hold"
     if fast > slow:
@@ -22,8 +27,8 @@ def sma_crossover_signal(closes: List[float], fast_window: int, slow_window: int
 
 
 def trend_following_signal(closes: List[float], fast_window: int, slow_window: int) -> Signal:
-    fast = sma(closes, fast_window)
-    slow = sma(closes, slow_window)
+    fast = moving_average(closes, fast_window)
+    slow = moving_average(closes, slow_window)
     if fast is None or slow is None or len(closes) < 2:
         return "hold"
     momentum_up = closes[-1] > closes[-2]
@@ -36,7 +41,7 @@ def trend_following_signal(closes: List[float], fast_window: int, slow_window: i
 
 
 def mean_reversion_signal(closes: List[float], slow_window: int) -> Signal:
-    baseline = sma(closes, slow_window)
+    baseline = moving_average(closes, slow_window)
     if baseline is None or baseline <= 0:
         return "hold"
     distance = (closes[-1] - baseline) / baseline

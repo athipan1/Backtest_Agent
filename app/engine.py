@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from app.models import BacktestMetrics, BacktestRunRequest, BacktestRunResult, EquityPoint, PriceBar, SimulatedTrade
+from app.strategies import strategy_signal
 
 
 @dataclass
@@ -82,6 +83,7 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
     cash = float(request.initial_equity)
     positions: Dict[str, Position] = {symbol.upper(): Position() for symbol in request.symbols}
     closes: Dict[str, List[float]] = {symbol.upper(): [] for symbol in request.symbols}
+    history: Dict[str, List[PriceBar]] = {symbol.upper(): [] for symbol in request.symbols}
     trades: List[SimulatedTrade] = []
     equity_curve: List[EquityPoint] = []
     warnings: List[str] = []
@@ -99,11 +101,11 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
     for _, symbol, bar in timeline:
         last_prices[symbol] = bar.close
         closes[symbol].append(bar.close)
-        fast = sma(closes[symbol], request.fast_window)
-        slow = sma(closes[symbol], request.slow_window)
+        history[symbol].append(bar)
+        signal = strategy_signal(request.strategy, closes[symbol], history[symbol], request.fast_window, request.slow_window)
         position = positions[symbol]
 
-        if fast is not None and slow is not None and fast > slow and position.quantity <= 0:
+        if signal == "buy" and position.quantity <= 0:
             max_position_value = request.initial_equity * request.max_position_pct
             price = _buy_price(bar.close, request.slippage_bps)
             quantity = int(max_position_value / price)
@@ -113,15 +115,15 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
                 cash -= cost + fees
                 position.quantity = float(quantity)
                 position.average_price = price
-                trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp))
+                trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
 
-        if fast is not None and slow is not None and fast < slow and position.quantity > 0:
+        if signal == "sell" and position.quantity > 0:
             price = _sell_price(bar.close, request.slippage_bps)
             proceeds = price * position.quantity
             fees = _fee(proceeds, request.fee_bps)
             realized_pnl = (price - position.average_price) * position.quantity - fees
             cash += proceeds - fees
-            trades.append(SimulatedTrade(symbol=symbol, side="sell", quantity=position.quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, realized_pnl=round(realized_pnl, 2)))
+            trades.append(SimulatedTrade(symbol=symbol, side="sell", quantity=position.quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, realized_pnl=round(realized_pnl, 2), reason=request.strategy))
             position.quantity = 0.0
             position.average_price = 0.0
 

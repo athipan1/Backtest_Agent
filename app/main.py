@@ -3,8 +3,9 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.compare import compare_strategies
-from app.models import BacktestCompareRequest, BacktestCompareResult, BacktestRunRequest, BacktestRunResult, HealthData, StandardAgentResponse
+from app.models import BacktestCompareRequest, BacktestCompareResult, BacktestRunRequest, BacktestRunResult, HealthData, StandardAgentResponse, WalkForwardRequest, WalkForwardResult
 from app.risk_engine import run_backtest_with_risk as run_backtest
+from app.walk_forward import run_walk_forward_validation
 
 
 app = FastAPI(
@@ -27,6 +28,11 @@ def backtest_run(request: BacktestRunRequest) -> StandardAgentResponse[BacktestR
 @app.post("/backtest/compare", response_model=StandardAgentResponse[BacktestCompareResult])
 def backtest_compare(request: BacktestCompareRequest) -> StandardAgentResponse[BacktestCompareResult]:
     return StandardAgentResponse(status="success", data=compare_strategies(request))
+
+
+@app.post("/backtest/walk-forward", response_model=StandardAgentResponse[WalkForwardResult])
+def backtest_walk_forward(request: WalkForwardRequest) -> StandardAgentResponse[WalkForwardResult]:
+    return StandardAgentResponse(status="success", data=run_walk_forward_validation(request))
 
 
 @app.get("/", include_in_schema=False)

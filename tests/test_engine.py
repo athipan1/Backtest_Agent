@@ -58,3 +58,60 @@ def test_run_backtest_warns_when_not_enough_bars():
 
     assert "AAPL has fewer bars than slow_window" in result.warnings
     assert result.metrics.trade_count == 0
+
+
+def test_run_backtest_supports_trend_following_strategy():
+    request = BacktestRunRequest(
+        symbols=["AAPL"],
+        initial_equity=100000,
+        strategy="trend_following",
+        fast_window=2,
+        slow_window=3,
+        fee_bps=0,
+        slippage_bps=0,
+        bars={"AAPL": bars([10, 11, 12, 13, 12, 11, 10])},
+    )
+
+    result = run_backtest(request)
+
+    assert result.strategy == "trend_following"
+    assert len(result.trades) >= 2
+    assert result.trades[0].reason == "trend_following"
+
+
+def test_run_backtest_supports_mean_reversion_strategy():
+    request = BacktestRunRequest(
+        symbols=["AAPL"],
+        initial_equity=100000,
+        strategy="mean_reversion",
+        fast_window=2,
+        slow_window=3,
+        fee_bps=0,
+        slippage_bps=0,
+        bars={"AAPL": bars([100, 100, 100, 96, 98, 103, 104])},
+    )
+
+    result = run_backtest(request)
+
+    assert result.strategy == "mean_reversion"
+    assert len(result.trades) >= 2
+    assert result.trades[0].side == "buy"
+
+
+def test_run_backtest_supports_breakout_strategy():
+    request = BacktestRunRequest(
+        symbols=["AAPL"],
+        initial_equity=100000,
+        strategy="breakout",
+        fast_window=2,
+        slow_window=3,
+        fee_bps=0,
+        slippage_bps=0,
+        bars={"AAPL": bars([10, 11, 12, 14, 15, 10, 8])},
+    )
+
+    result = run_backtest(request)
+
+    assert result.strategy == "breakout"
+    assert len(result.trades) >= 2
+    assert result.trades[0].side == "buy"

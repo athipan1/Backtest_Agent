@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from app.engine import Position, _bars_for_symbol, _buy_price, _fee, _sell_price, _trade_metrics, sma
+from app.engine import Position, _bars_for_symbol, _buy_price, _fee, _sell_price, _trade_metrics
 from app.models import BacktestRunRequest, BacktestRunResult, EquityPoint, RiskCheckPayload, RiskRejection, SimulatedTrade
 from app.risk_adapter import LocalRiskAdapter
+from app.strategies import strategy_signal
 
 
 def _portfolio_value(cash: float, positions: Dict[str, Position], prices: Dict[str, float]) -> float:
@@ -15,6 +16,7 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
     cash = float(request.initial_equity)
     positions: Dict[str, Position] = {symbol.upper(): Position() for symbol in request.symbols}
     closes: Dict[str, List[float]] = {symbol.upper(): [] for symbol in request.symbols}
+    history = {symbol.upper(): [] for symbol in request.symbols}
     trades: List[SimulatedTrade] = []
     equity_curve: List[EquityPoint] = []
     risk_rejections: List[RiskRejection] = []
@@ -35,12 +37,12 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
     for _, symbol, bar in timeline:
         last_prices[symbol] = bar.close
         closes[symbol].append(bar.close)
-        fast = sma(closes[symbol], request.fast_window)
-        slow = sma(closes[symbol], request.slow_window)
+        history[symbol].append(bar)
+        signal = strategy_signal(request.strategy, closes[symbol], history[symbol], request.fast_window, request.slow_window)
         position = positions[symbol]
         day_key = bar.timestamp.date().isoformat()
 
-        if fast is not None and slow is not None and fast > slow and position.quantity <= 0:
+        if signal == "buy" and position.quantity <= 0:
             entry_price = _buy_price(bar.close, request.slippage_bps)
             quantity = int((request.initial_equity * request.max_position_pct) / entry_price)
             decision = risk_adapter.evaluate(
@@ -82,15 +84,15 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
                     entries_by_day[day_key] = entries_by_day.get(day_key, 0) + 1
                     position.quantity = float(quantity)
                     position.average_price = entry_price
-                    trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(entry_price, 4), fees=round(fees, 2), timestamp=bar.timestamp))
+                    trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(entry_price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
 
-        if fast is not None and slow is not None and fast < slow and position.quantity > 0:
+        if signal == "sell" and position.quantity > 0:
             exit_price = _sell_price(bar.close, request.slippage_bps)
             proceeds = exit_price * position.quantity
             fees = _fee(proceeds, request.fee_bps)
             realized_pnl = (exit_price - position.average_price) * position.quantity - fees
             cash += proceeds - fees
-            trades.append(SimulatedTrade(symbol=symbol, side="sell", quantity=position.quantity, price=round(exit_price, 4), fees=round(fees, 2), timestamp=bar.timestamp, realized_pnl=round(realized_pnl, 2)))
+            trades.append(SimulatedTrade(symbol=symbol, side="sell", quantity=position.quantity, price=round(exit_price, 4), fees=round(fees, 2), timestamp=bar.timestamp, realized_pnl=round(realized_pnl, 2), reason=request.strategy))
             position.quantity = 0.0
             position.average_price = 0.0
 

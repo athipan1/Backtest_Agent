@@ -101,6 +101,30 @@ class BacktestCompareRequest(BaseModel):
         return self
 
 
+class WalkForwardRequest(BaseModel):
+    symbols: List[str] = Field(min_length=1)
+    initial_equity: float = Field(gt=0)
+    bars: Dict[str, List[PriceBar]]
+    candidates: List[StrategyCandidate] = Field(min_length=1, max_length=25)
+    train_ratio: float = Field(default=0.70, gt=0.1, lt=0.9)
+    min_train_bars: int = Field(default=10, ge=3)
+    min_test_bars: int = Field(default=5, ge=2)
+    risk_per_trade: float = Field(default=0.01, gt=0, le=1)
+    max_position_pct: float = Field(default=0.10, gt=0, le=1)
+    fee_bps: float = Field(default=10, ge=0)
+    slippage_bps: float = Field(default=5, ge=0)
+    use_risk_agent: bool = True
+    emergency_halt: bool = False
+    max_trades_per_day: int = Field(default=5, ge=1)
+
+    @model_validator(mode="after")
+    def validate_walk_forward_bars(self) -> "WalkForwardRequest":
+        missing = [symbol for symbol in self.symbols if symbol.upper() not in {key.upper() for key in self.bars}]
+        if missing:
+            raise ValueError(f"missing bars for symbols: {missing}")
+        return self
+
+
 class RiskCheckPayload(BaseModel):
     account_id: str = "backtest"
     symbol: str
@@ -201,3 +225,15 @@ class BacktestCompareResult(BaseModel):
     symbols: List[str]
     ranked_results: List[StrategyComparisonResult]
     best: Optional[StrategyComparisonResult] = None
+
+
+class WalkForwardResult(BaseModel):
+    symbols: List[str]
+    train_ratio: float
+    train_bars: Dict[str, int]
+    test_bars: Dict[str, int]
+    selected_candidate: Optional[StrategyComparisonResult] = None
+    train_ranking: List[StrategyComparisonResult]
+    test_result: Optional[BacktestRunResult] = None
+    passed: bool
+    reasons: List[str] = Field(default_factory=list)

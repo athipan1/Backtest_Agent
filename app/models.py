@@ -237,3 +237,21 @@ class WalkForwardResult(BaseModel):
     test_result: Optional[BacktestRunResult] = None
     passed: bool
     reasons: List[str] = Field(default_factory=list)
+
+
+class PerformanceReportRequest(BaseModel):
+    result: BacktestRunResult
+    min_trades: int = Field(default=10, ge=1)
+    min_profit_factor: float = Field(default=1.30, gt=0)
+    max_drawdown_floor: float = Field(default=-0.10, lt=0)
+    min_expectancy: float = Field(default=0.0)
+
+
+class PerformanceReport(BaseModel):
+    verdict: Literal["paper_ready", "needs_improvement", "blocked"]
+    score: float
+    summary: str
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
+    gates: Dict[str, bool]
+    metrics: BacktestMetrics

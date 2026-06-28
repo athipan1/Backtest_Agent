@@ -106,3 +106,44 @@ def test_backtest_walk_forward_endpoint():
     assert payload["data"]["symbols"] == ["AAPL"]
     assert payload["data"]["selected_candidate"]["rank"] == 1
     assert payload["data"]["test_result"] is not None
+
+
+def test_backtest_report_endpoint():
+    response = client.post(
+        "/backtest/report",
+        json={
+            "min_trades": 1,
+            "result": {
+                "strategy": "sma_crossover",
+                "symbols": ["AAPL"],
+                "trades": [],
+                "equity_curve": [],
+                "risk_rejections": [],
+                "warnings": [],
+                "metrics": {
+                    "initial_equity": 100000,
+                    "final_equity": 112000,
+                    "net_profit": 12000,
+                    "return_pct": 0.12,
+                    "trade_count": 12,
+                    "winning_trades": 8,
+                    "losing_trades": 4,
+                    "win_rate": 0.66,
+                    "gross_profit": 15000,
+                    "gross_loss": -3000,
+                    "profit_factor": 5.0,
+                    "expectancy": 1000,
+                    "max_drawdown": -0.05,
+                    "risk_rejections": 0,
+                    "kill_switch_events": 0
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "success"
+    assert payload["data"]["verdict"] == "paper_ready"
+    assert payload["data"]["gates"]["trade_count"] is True
+    assert payload["data"]["score"] >= 0.8

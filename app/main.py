@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from app.engine import run_backtest
 from app.models import BacktestRunRequest, BacktestRunResult, HealthData, StandardAgentResponse
+from app.risk_engine import run_backtest_with_risk as run_backtest
 
 
 app = FastAPI(

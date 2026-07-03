@@ -25,6 +25,8 @@ def compare_strategies(request: BacktestCompareRequest) -> BacktestCompareResult
             slow_window=candidate.slow_window,
             risk_per_trade=request.risk_per_trade,
             max_position_pct=candidate.max_position_pct if candidate.max_position_pct is not None else request.max_position_pct,
+            stop_loss_pct=candidate.stop_loss_pct if candidate.stop_loss_pct is not None else request.stop_loss_pct,
+            reward_risk_ratio=candidate.reward_risk_ratio if candidate.reward_risk_ratio is not None else request.reward_risk_ratio,
             fee_bps=candidate.fee_bps if candidate.fee_bps is not None else request.fee_bps,
             slippage_bps=candidate.slippage_bps if candidate.slippage_bps is not None else request.slippage_bps,
             use_risk_agent=request.use_risk_agent,

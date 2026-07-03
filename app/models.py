@@ -49,6 +49,8 @@ class BacktestRunRequest(BaseModel):
     slow_window: int = Field(default=5, ge=2)
     risk_per_trade: float = Field(default=0.01, gt=0, le=1)
     max_position_pct: float = Field(default=0.10, gt=0, le=1)
+    stop_loss_pct: float = Field(default=0.03, gt=0, lt=1)
+    reward_risk_ratio: float = Field(default=2.0, gt=0)
     fee_bps: float = Field(default=10, ge=0)
     slippage_bps: float = Field(default=5, ge=0)
     use_risk_agent: bool = True
@@ -71,6 +73,8 @@ class StrategyCandidate(BaseModel):
     fast_window: int = Field(default=3, ge=1)
     slow_window: int = Field(default=5, ge=2)
     max_position_pct: Optional[float] = Field(default=None, gt=0, le=1)
+    stop_loss_pct: Optional[float] = Field(default=None, gt=0, lt=1)
+    reward_risk_ratio: Optional[float] = Field(default=None, gt=0)
     fee_bps: Optional[float] = Field(default=None, ge=0)
     slippage_bps: Optional[float] = Field(default=None, ge=0)
 
@@ -88,6 +92,8 @@ class BacktestCompareRequest(BaseModel):
     candidates: List[StrategyCandidate] = Field(min_length=1, max_length=25)
     risk_per_trade: float = Field(default=0.01, gt=0, le=1)
     max_position_pct: float = Field(default=0.10, gt=0, le=1)
+    stop_loss_pct: float = Field(default=0.03, gt=0, lt=1)
+    reward_risk_ratio: float = Field(default=2.0, gt=0)
     fee_bps: float = Field(default=10, ge=0)
     slippage_bps: float = Field(default=5, ge=0)
     use_risk_agent: bool = True
@@ -112,6 +118,8 @@ class WalkForwardRequest(BaseModel):
     min_test_bars: int = Field(default=5, ge=2)
     risk_per_trade: float = Field(default=0.01, gt=0, le=1)
     max_position_pct: float = Field(default=0.10, gt=0, le=1)
+    stop_loss_pct: float = Field(default=0.03, gt=0, lt=1)
+    reward_risk_ratio: float = Field(default=2.0, gt=0)
     fee_bps: float = Field(default=10, ge=0)
     slippage_bps: float = Field(default=5, ge=0)
     use_risk_agent: bool = True

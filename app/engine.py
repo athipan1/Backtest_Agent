@@ -11,6 +11,14 @@ from app.strategies import strategy_signal
 class Position:
     quantity: float = 0.0
     average_price: float = 0.0
+    stop_loss: float | None = None
+    take_profit: float | None = None
+
+    def reset(self) -> None:
+        self.quantity = 0.0
+        self.average_price = 0.0
+        self.stop_loss = None
+        self.take_profit = None
 
 
 def sma(values: List[float], window: int) -> Optional[float]:
@@ -41,6 +49,66 @@ def _buy_price(close: float, slippage_bps: float) -> float:
 
 def _sell_price(close: float, slippage_bps: float) -> float:
     return close * (1.0 - slippage_bps / 10000.0)
+
+
+def _stop_loss_price(entry_price: float, request: BacktestRunRequest) -> float:
+    return entry_price * (1.0 - request.stop_loss_pct)
+
+
+def _take_profit_price(entry_price: float, stop_loss: float, request: BacktestRunRequest) -> float:
+    risk_per_share = entry_price - stop_loss
+    return entry_price + (risk_per_share * request.reward_risk_ratio)
+
+
+def _exit_position(
+    *,
+    symbol: str,
+    position: Position,
+    cash: float,
+    exit_price: float,
+    timestamp,
+    reason: str,
+    fee_bps: float,
+    trades: List[SimulatedTrade],
+) -> float:
+    proceeds = exit_price * position.quantity
+    fees = _fee(proceeds, fee_bps)
+    realized_pnl = (exit_price - position.average_price) * position.quantity - fees
+    cash += proceeds - fees
+    trades.append(
+        SimulatedTrade(
+            symbol=symbol,
+            side="sell",
+            quantity=position.quantity,
+            price=round(exit_price, 4),
+            fees=round(fees, 2),
+            timestamp=timestamp,
+            realized_pnl=round(realized_pnl, 2),
+            reason=reason,
+        )
+    )
+    position.reset()
+    return cash
+
+
+def _intrabar_exit_price(position: Position, bar: PriceBar) -> tuple[float | None, str | None]:
+    """Return exit price/reason if a long position's broker-side exits are hit.
+
+    If stop loss and take profit are both touched in the same candle, assume the
+    stop loss fills first. This conservative rule prevents overly optimistic
+    backtests when intrabar path is unknown.
+    """
+    if position.quantity <= 0:
+        return None, None
+
+    stop_hit = position.stop_loss is not None and bar.low <= position.stop_loss
+    take_profit_hit = position.take_profit is not None and bar.high >= position.take_profit
+
+    if stop_hit:
+        return position.stop_loss, "stop_loss"
+    if take_profit_hit:
+        return position.take_profit, "take_profit"
+    return None, None
 
 
 def _trade_metrics(initial_equity: float, final_equity: float, trades: List[SimulatedTrade], curve: List[EquityPoint]) -> BacktestMetrics:
@@ -105,6 +173,19 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
         signal = strategy_signal(request.strategy, closes[symbol], history[symbol], request.fast_window, request.slow_window)
         position = positions[symbol]
 
+        exit_price, exit_reason = _intrabar_exit_price(position, bar)
+        if exit_price is not None and exit_reason is not None:
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=exit_price,
+                timestamp=bar.timestamp,
+                reason=exit_reason,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+
         if signal == "buy" and position.quantity <= 0:
             max_position_value = request.initial_equity * request.max_position_pct
             price = _buy_price(bar.close, request.slippage_bps)
@@ -113,19 +194,25 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
             fees = _fee(cost, request.fee_bps)
             if quantity > 0 and cash >= cost + fees:
                 cash -= cost + fees
+                stop_loss = _stop_loss_price(price, request)
                 position.quantity = float(quantity)
                 position.average_price = price
+                position.stop_loss = stop_loss
+                position.take_profit = _take_profit_price(price, stop_loss, request)
                 trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
 
         if signal == "sell" and position.quantity > 0:
             price = _sell_price(bar.close, request.slippage_bps)
-            proceeds = price * position.quantity
-            fees = _fee(proceeds, request.fee_bps)
-            realized_pnl = (price - position.average_price) * position.quantity - fees
-            cash += proceeds - fees
-            trades.append(SimulatedTrade(symbol=symbol, side="sell", quantity=position.quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, realized_pnl=round(realized_pnl, 2), reason=request.strategy))
-            position.quantity = 0.0
-            position.average_price = 0.0
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=price,
+                timestamp=bar.timestamp,
+                reason=request.strategy,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
 
         equity = cash + sum(pos.quantity * last_prices.get(sym, pos.average_price) for sym, pos in positions.items())
         equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(equity, 2)))

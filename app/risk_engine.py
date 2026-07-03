@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from app.engine import Position, _bars_for_symbol, _buy_price, _fee, _sell_price, _trade_metrics
+from app.engine import (
+    Position,
+    _bars_for_symbol,
+    _buy_price,
+    _exit_position,
+    _intrabar_exit_price,
+    _portfolio_value,
+    _stop_loss_price,
+    _take_profit_price,
+    _trade_metrics,
+)
 from app.models import BacktestRunRequest, BacktestRunResult, EquityPoint, RiskCheckPayload, RiskRejection, SimulatedTrade
 from app.risk_adapter import LocalRiskAdapter
 from app.strategies import strategy_signal
@@ -42,15 +52,29 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
         position = positions[symbol]
         day_key = bar.timestamp.date().isoformat()
 
+        exit_price, exit_reason = _intrabar_exit_price(position, bar)
+        if exit_price is not None and exit_reason is not None:
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=exit_price,
+                timestamp=bar.timestamp,
+                reason=exit_reason,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+
         if signal == "buy" and position.quantity <= 0:
             entry_price = _buy_price(bar.close, request.slippage_bps)
+            stop_loss = _stop_loss_price(entry_price, request)
             quantity = int((request.initial_equity * request.max_position_pct) / entry_price)
             decision = risk_adapter.evaluate(
                 RiskCheckPayload(
                     symbol=symbol,
                     side="buy",
                     entry_price=entry_price,
-                    protection_price=entry_price * 0.97,
+                    protection_price=stop_loss,
                     equity=request.initial_equity,
                     requested_quantity=quantity,
                     current_symbol_exposure=0.0,
@@ -84,17 +108,22 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
                     entries_by_day[day_key] = entries_by_day.get(day_key, 0) + 1
                     position.quantity = float(quantity)
                     position.average_price = entry_price
+                    position.stop_loss = stop_loss
+                    position.take_profit = _take_profit_price(entry_price, stop_loss, request)
                     trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(entry_price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
 
         if signal == "sell" and position.quantity > 0:
             exit_price = _sell_price(bar.close, request.slippage_bps)
-            proceeds = exit_price * position.quantity
-            fees = _fee(proceeds, request.fee_bps)
-            realized_pnl = (exit_price - position.average_price) * position.quantity - fees
-            cash += proceeds - fees
-            trades.append(SimulatedTrade(symbol=symbol, side="sell", quantity=position.quantity, price=round(exit_price, 4), fees=round(fees, 2), timestamp=bar.timestamp, realized_pnl=round(realized_pnl, 2), reason=request.strategy))
-            position.quantity = 0.0
-            position.average_price = 0.0
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=exit_price,
+                timestamp=bar.timestamp,
+                reason=request.strategy,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
 
         equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(_portfolio_value(cash, positions, last_prices), 2)))
 

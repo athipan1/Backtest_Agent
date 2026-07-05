@@ -43,9 +43,35 @@ GET /version
 
 ```http
 POST /backtest/run
+POST /backtest/run-and-publish
 POST /backtest/compare
 POST /backtest/walk-forward
 POST /backtest/report
+```
+
+### `POST /backtest/run-and-publish`
+
+Runs the same historical simulation as `/backtest/run`, then optionally publishes the normalized result to `Database_Agent` via `POST /backtests/runs`.
+
+Additional request fields:
+
+```json
+{
+  "account_id": "1",
+  "run_id": "optional-run-id",
+  "skill_id": "optional-skill-id",
+  "strategy_id": "optional-strategy-id",
+  "timeframe": "1d",
+  "publish_to_database": true,
+  "metadata": {}
+}
+```
+
+Environment variables used by the publisher:
+
+```bash
+DATABASE_AGENT_URL=http://database-agent:8004
+DATABASE_AGENT_API_KEY=dev_database_key
 ```
 
 ## Safety Rules
@@ -55,3 +81,4 @@ POST /backtest/report
 3. Backtest reports should gate strategy promotion before paper or live workflows.
 4. Manager remains responsible for orchestration.
 5. Risk and Execution controls remain required outside simulation.
+6. Database publishing is storage-only. It does not submit, cancel, approve, or modify broker orders.

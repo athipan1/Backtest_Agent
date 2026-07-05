@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.compare import compare_strategies
 from app.models import BacktestCompareRequest, BacktestCompareResult, BacktestRunRequest, BacktestRunResult, HealthData, PerformanceReport, PerformanceReportRequest, StandardAgentResponse, WalkForwardRequest, WalkForwardResult
 from app.risk_engine import run_backtest_with_risk as run_backtest
+from app.system_contract import router as system_contract_router
 from app.walk_forward import run_walk_forward_validation
 
 
@@ -13,6 +14,7 @@ app = FastAPI(
     description="Historical simulation service for the multi-agent trading system.",
     version="0.1.0",
 )
+app.include_router(system_contract_router)
 
 
 def build_report(request: PerformanceReportRequest) -> PerformanceReport:

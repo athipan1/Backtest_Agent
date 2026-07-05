@@ -1,0 +1,70 @@
+name: Hourly Backtest
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol to backtest"
+        required: false
+        default: "AAPL"
+      publish_to_database:
+        description: "Publish result to Database_Agent"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
+  BACKTEST_SYMBOL: ${{ github.event.inputs.symbol || vars.BACKTEST_SYMBOL || 'AAPL' }}
+  BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
+  BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
+  BACKTEST_TIMEFRAME: ${{ vars.BACKTEST_TIMEFRAME || '1d' }}
+  BACKTEST_INITIAL_EQUITY: ${{ vars.BACKTEST_INITIAL_EQUITY || '100000' }}
+  BACKTEST_STRATEGY: ${{ vars.BACKTEST_STRATEGY || 'sma_crossover' }}
+  BACKTEST_FAST_WINDOW: ${{ vars.BACKTEST_FAST_WINDOW || '2' }}
+  BACKTEST_SLOW_WINDOW: ${{ vars.BACKTEST_SLOW_WINDOW || '3' }}
+  BACKTEST_FEE_BPS: ${{ vars.BACKTEST_FEE_BPS || '0' }}
+  BACKTEST_SLIPPAGE_BPS: ${{ vars.BACKTEST_SLIPPAGE_BPS || '0' }}
+  PUBLISH_TO_DATABASE: ${{ github.event.inputs.publish_to_database || vars.PUBLISH_TO_DATABASE || 'true' }}
+  DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
+  DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+
+jobs:
+  hourly-backtest:
+    name: Run hourly backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: hourly-backtest-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests first
+        run: python -m pytest tests/test_database_publisher.py tests/test_run_and_publish_endpoint.py
+
+      - name: Run hourly backtest
+        run: python scripts/run_hourly_backtest.py
+
+      - name: Upload backtest report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hourly-backtest-report
+          path: reports/hourly-backtest-result.json
+          if-no-files-found: warn

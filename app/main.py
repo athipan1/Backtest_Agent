@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any, Dict, Optional
+
 from fastapi import FastAPI
+from pydantic import BaseModel, Field
 
 from app.compare import compare_strategies
 from app.models import (
@@ -15,9 +18,28 @@ from app.models import (
     WalkForwardRequest,
     WalkForwardResult,
 )
+from app.publisher import publish_backtest_result
 from app.risk_engine import run_backtest_with_risk as run_backtest
 from app.system_contract import router as system_contract_router
 from app.walk_forward import run_walk_forward_validation
+
+
+class BacktestRunAndPublishRequest(BacktestRunRequest):
+    account_id: str = "1"
+    run_id: Optional[str] = None
+    skill_id: Optional[str] = None
+    strategy_id: Optional[str] = None
+    timeframe: str = "1d"
+    publish_to_database: bool = True
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BacktestRunAndPublishResult(BaseModel):
+    result: BacktestRunResult
+    published: bool
+    publish_status: str
+    database_payload: Optional[Dict[str, Any]] = None
+    database_response: Optional[Dict[str, Any]] = None
 
 
 app = FastAPI(
@@ -58,6 +80,39 @@ def health() -> StandardAgentResponse[HealthData]:
 @app.post("/backtest/run", response_model=StandardAgentResponse[BacktestRunResult])
 def backtest_run(request: BacktestRunRequest) -> StandardAgentResponse[BacktestRunResult]:
     return StandardAgentResponse(status="success", data=run_backtest(request))
+
+
+@app.post("/backtest/run-and-publish", response_model=StandardAgentResponse[BacktestRunAndPublishResult])
+def backtest_run_and_publish(request: BacktestRunAndPublishRequest) -> StandardAgentResponse[BacktestRunAndPublishResult]:
+    result = run_backtest(request)
+    publish_report = {
+        "status": "skipped",
+        "database_response": None,
+        "payload": None,
+    }
+    if request.publish_to_database:
+        publish_report = publish_backtest_result(
+            request=request,
+            result=result,
+            account_id=request.account_id,
+            run_id=request.run_id,
+            skill_id=request.skill_id,
+            strategy_id=request.strategy_id,
+            timeframe=request.timeframe,
+            metadata=request.metadata,
+        )
+
+    publish_status = str(publish_report.get("status") or "success")
+    return StandardAgentResponse(
+        status="success",
+        data=BacktestRunAndPublishResult(
+            result=result,
+            published=request.publish_to_database and publish_status != "skipped",
+            publish_status=publish_status,
+            database_payload=publish_report.get("payload"),
+            database_response=publish_report.get("database_response"),
+        ),
+    )
 
 
 @app.post("/backtest/compare", response_model=StandardAgentResponse[BacktestCompareResult])

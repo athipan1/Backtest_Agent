@@ -40,3 +40,15 @@ PYTHONPATH=. pytest -q
 - Scanner replay mode
 - Strategy comparison endpoint
 - Walk-forward validation
+
+## Scheduled historical data
+
+The hourly workflow fetches real historical OHLCV bars from Alpaca Market Data.
+It deliberately fails when market-data credentials or sufficient bars are not
+available; it never falls back to embedded sample prices. Configure
+`ALPACA_API_KEY_ID` and `ALPACA_SECRET_KEY` as repository secrets. This endpoint
+uses market data only and does not submit, cancel, or inspect broker orders.
+
+Each run stores a SHA-256 dataset fingerprint and derives a deterministic run ID
+from the dataset and strategy parameters so repeated data cannot silently create
+different backtest identities.

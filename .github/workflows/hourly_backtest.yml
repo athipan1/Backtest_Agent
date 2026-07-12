@@ -13,6 +13,14 @@ on:
         description: "Publish result to Database_Agent"
         required: false
         default: "true"
+      start:
+        description: "Historical data start (ISO-8601)"
+        required: false
+        default: ""
+      end:
+        description: "Historical data end (ISO-8601); blank uses current UTC time"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -23,6 +31,10 @@ env:
   BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
   BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
   BACKTEST_TIMEFRAME: ${{ vars.BACKTEST_TIMEFRAME || '1d' }}
+  BACKTEST_START: ${{ github.event.inputs.start || vars.BACKTEST_START || '' }}
+  BACKTEST_END: ${{ github.event.inputs.end || vars.BACKTEST_END || '' }}
+  BACKTEST_MINIMUM_BARS: ${{ vars.BACKTEST_MINIMUM_BARS || '252' }}
+  BACKTEST_BAR_LIMIT: ${{ vars.BACKTEST_BAR_LIMIT || '10000' }}
   BACKTEST_INITIAL_EQUITY: ${{ vars.BACKTEST_INITIAL_EQUITY || '100000' }}
   BACKTEST_STRATEGY: ${{ vars.BACKTEST_STRATEGY || 'sma_crossover' }}
   BACKTEST_FAST_WINDOW: ${{ vars.BACKTEST_FAST_WINDOW || '2' }}
@@ -32,6 +44,10 @@ env:
   PUBLISH_TO_DATABASE: ${{ github.event.inputs.publish_to_database || vars.PUBLISH_TO_DATABASE || 'true' }}
   DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
   DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
 
 jobs:
   hourly-backtest:
@@ -56,7 +72,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run tests first
-        run: python -m pytest tests/test_database_publisher.py tests/test_run_and_publish_endpoint.py
+        run: python -m pytest -q
 
       - name: Run hourly backtest
         run: python scripts/run_hourly_backtest.py

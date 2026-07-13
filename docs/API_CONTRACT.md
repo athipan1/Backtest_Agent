@@ -44,6 +44,7 @@ GET /version
 ```http
 POST /backtest/run
 POST /backtest/run-and-publish
+POST /backtest/run-and-publish-batch
 POST /backtest/compare
 POST /backtest/walk-forward
 POST /backtest/report
@@ -52,6 +53,8 @@ POST /backtest/report
 ### `POST /backtest/run-and-publish`
 
 Runs the same historical simulation as `/backtest/run`, then optionally publishes the normalized result to `Database_Agent` via `POST /backtests/runs`.
+This endpoint accepts exactly one unique symbol; multi-symbol callers must use
+`/backtest/run-and-publish-batch` so database evidence cannot be ambiguous.
 
 Additional request fields:
 
@@ -74,6 +77,23 @@ DATABASE_AGENT_URL=http://database-agent:8004
 DATABASE_AGENT_API_KEY=dev_database_key
 ```
 
+### `POST /backtest/run-and-publish-batch`
+
+Runs each requested symbol as an independent simulation and publishes one
+Database_Agent run per exact `skill_id + strategy_id + symbol + timeframe`
+identity. A batch never combines metrics from different symbols into one
+database record.
+
+The request accepts the same fields as `/backtest/run-and-publish`, plus an
+optional `batch_id`. At most 25 symbols are accepted. Symbols are normalized to
+uppercase and duplicates are removed while preserving order.
+
+Each result item contains its own `run_id`, simulation result, publish status,
+database payload, and database response. A failure for one symbol is reported
+against that symbol and cannot fall back to evidence from another symbol. The
+batch response sets `all_succeeded=false`, and the hourly CLI exits non-zero,
+when any requested simulation or required database publish fails.
+
 ## Safety Rules
 
 1. `Backtest_Agent` validates strategies using historical simulation only.
@@ -82,3 +102,4 @@ DATABASE_AGENT_API_KEY=dev_database_key
 4. Manager remains responsible for orchestration.
 5. Risk and Execution controls remain required outside simulation.
 6. Database publishing is storage-only. It does not submit, cancel, approve, or modify broker orders.
+7. Batch execution is bounded and sequential; it does not call broker trading APIs.

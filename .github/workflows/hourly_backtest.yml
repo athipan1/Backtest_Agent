@@ -6,9 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       symbol:
-        description: "Symbol to backtest"
+        description: "Legacy single symbol (used when symbols is blank)"
         required: false
         default: "AAPL"
+      symbols:
+        description: "Comma-separated symbols to backtest independently"
+        required: false
+        default: ""
       publish_to_database:
         description: "Publish result to Database_Agent"
         required: false
@@ -28,6 +32,8 @@ permissions:
 env:
   BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
   BACKTEST_SYMBOL: ${{ github.event.inputs.symbol || vars.BACKTEST_SYMBOL || 'AAPL' }}
+  BACKTEST_SYMBOLS: ${{ github.event.inputs.symbols || vars.BACKTEST_SYMBOLS || github.event.inputs.symbol || vars.BACKTEST_SYMBOL || 'AAPL' }}
+  BACKTEST_MAX_SYMBOLS: ${{ vars.BACKTEST_MAX_SYMBOLS || '10' }}
   BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
   BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
   BACKTEST_TIMEFRAME: ${{ vars.BACKTEST_TIMEFRAME || '1d' }}
@@ -53,7 +59,7 @@ jobs:
   hourly-backtest:
     name: Run hourly backtest
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     concurrency:
       group: hourly-backtest-${{ github.ref }}
       cancel-in-progress: false
@@ -82,5 +88,5 @@ jobs:
         if: always()
         with:
           name: hourly-backtest-report
-          path: reports/hourly-backtest-result.json
+          path: reports/
           if-no-files-found: warn

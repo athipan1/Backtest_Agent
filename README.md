@@ -44,6 +44,9 @@ PYTHONPATH=. pytest -q
 ## Scheduled historical data
 
 The hourly workflow fetches real historical OHLCV bars from Alpaca Market Data.
+Set `BACKTEST_SYMBOLS=AAPL,MSFT,NVDA` to run a bounded batch. Each symbol is
+simulated and published independently, producing exact per-symbol evidence for
+Database_Agent without submitting broker orders.
 It deliberately fails when market-data credentials or sufficient bars are not
 available; it never falls back to embedded sample prices. Configure
 `ALPACA_API_KEY_ID` and `ALPACA_SECRET_KEY` as repository secrets. This endpoint

@@ -95,3 +95,25 @@ def test_run_and_publish_endpoint_can_skip_database_publish(monkeypatch):
     body = response.json()
     assert body["data"]["published"] is False
     assert body["data"]["publish_status"] == "skipped"
+
+
+def test_run_and_publish_endpoint_rejects_ambiguous_multi_symbol_publish():
+    bars = [
+        {"timestamp": "2026-01-01T00:00:00Z", "open": 10, "high": 11, "low": 9, "close": 10, "volume": 1000},
+        {"timestamp": "2026-01-02T00:00:00Z", "open": 11, "high": 12, "low": 10, "close": 11, "volume": 1000},
+        {"timestamp": "2026-01-03T00:00:00Z", "open": 12, "high": 13, "low": 11, "close": 12, "volume": 1000},
+    ]
+
+    response = client.post(
+        "/backtest/run-and-publish",
+        json={
+            "symbols": ["AAPL", "MSFT"],
+            "initial_equity": 100000,
+            "fast_window": 2,
+            "slow_window": 3,
+            "bars": {"AAPL": bars, "MSFT": bars},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "run-and-publish-batch" in response.json()["detail"]

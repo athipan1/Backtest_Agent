@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Literal, Optional
+from uuid import uuid4
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, field_validator
 
 from app.compare import compare_strategies
 from app.models import (
@@ -40,6 +41,43 @@ class BacktestRunAndPublishResult(BaseModel):
     publish_status: str
     database_payload: Optional[Dict[str, Any]] = None
     database_response: Optional[Dict[str, Any]] = None
+
+
+class BacktestBatchRunAndPublishRequest(BacktestRunAndPublishRequest):
+    symbols: List[str] = Field(min_length=1, max_length=25)
+    batch_id: Optional[str] = None
+
+    @field_validator("symbols", mode="before")
+    @classmethod
+    def normalize_batch_symbols(cls, value):
+        normalized = _normalized_symbols(value or [])
+        if not normalized:
+            raise ValueError("at least one non-empty symbol is required")
+        return normalized
+
+
+class BacktestBatchItemResult(BaseModel):
+    symbol: str
+    run_id: str
+    status: Literal["success", "failed"]
+    published: bool = False
+    publish_status: str
+    result: Optional[BacktestRunResult] = None
+    database_payload: Optional[Dict[str, Any]] = None
+    database_response: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
+class BacktestBatchRunAndPublishResult(BaseModel):
+    batch_id: str
+    symbols: List[str]
+    items: List[BacktestBatchItemResult]
+    succeeded_symbols: List[str]
+    failed_symbols: List[str]
+    published_count: int
+    published: bool
+    publish_status: Literal["success", "skipped", "partial_failure", "failed"]
+    all_succeeded: bool
 
 
 app = FastAPI(
@@ -84,6 +122,14 @@ def backtest_run(request: BacktestRunRequest) -> StandardAgentResponse[BacktestR
 
 @app.post("/backtest/run-and-publish", response_model=StandardAgentResponse[BacktestRunAndPublishResult])
 def backtest_run_and_publish(request: BacktestRunAndPublishRequest) -> StandardAgentResponse[BacktestRunAndPublishResult]:
+    if len(_normalized_symbols(request.symbols)) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "run-and-publish requires exactly one symbol; use "
+                "/backtest/run-and-publish-batch for multiple symbols"
+            ),
+        )
     result = run_backtest(request)
     publish_report = {
         "status": "skipped",
@@ -107,11 +153,133 @@ def backtest_run_and_publish(request: BacktestRunAndPublishRequest) -> StandardA
         status="success",
         data=BacktestRunAndPublishResult(
             result=result,
-            published=request.publish_to_database and publish_status != "skipped",
+            published=request.publish_to_database and publish_status == "success",
             publish_status=publish_status,
             database_payload=publish_report.get("payload"),
             database_response=publish_report.get("database_response"),
         ),
+    )
+
+
+def _normalized_symbols(symbols: List[str]) -> List[str]:
+    return list(dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip()))
+
+
+def _bars_for_exact_symbol(request: BacktestRunRequest, symbol: str) -> list:
+    for key, bars in request.bars.items():
+        if key.upper() == symbol:
+            return bars
+    return []
+
+
+def _single_symbol_batch_request(
+    request: BacktestBatchRunAndPublishRequest,
+    *,
+    batch_id: str,
+    symbol: str,
+    index: int,
+    batch_size: int,
+) -> BacktestRunAndPublishRequest:
+    payload = request.model_dump(exclude={"batch_id"})
+    payload.update(
+        symbols=[symbol],
+        bars={symbol: _bars_for_exact_symbol(request, symbol)},
+        run_id=f"{batch_id}-{symbol.lower()}",
+        metadata={
+            **request.metadata,
+            "batch_id": batch_id,
+            "batch_symbol": symbol,
+            "batch_index": index,
+            "batch_size": batch_size,
+        },
+    )
+    return BacktestRunAndPublishRequest(**payload)
+
+
+@app.post(
+    "/backtest/run-and-publish-batch",
+    response_model=StandardAgentResponse[BacktestBatchRunAndPublishResult],
+)
+def backtest_run_and_publish_batch(
+    request: BacktestBatchRunAndPublishRequest,
+) -> StandardAgentResponse[BacktestBatchRunAndPublishResult]:
+    """Run and publish one independent Backtest per exact symbol identity."""
+    symbols = _normalized_symbols(request.symbols)
+    batch_id = request.batch_id or request.run_id or f"batch-{uuid4().hex[:24]}"
+    items: List[BacktestBatchItemResult] = []
+
+    for index, symbol in enumerate(symbols, start=1):
+        single_request = _single_symbol_batch_request(
+            request,
+            batch_id=batch_id,
+            symbol=symbol,
+            index=index,
+            batch_size=len(symbols),
+        )
+        try:
+            response = backtest_run_and_publish(single_request)
+            result = response.data
+            if result is None:
+                raise RuntimeError("single-symbol Backtest returned no data")
+            publish_ok = not request.publish_to_database or result.published
+            if not publish_ok:
+                raise RuntimeError(
+                    f"Database publish did not succeed: {result.publish_status}"
+                )
+            items.append(
+                BacktestBatchItemResult(
+                    symbol=symbol,
+                    run_id=single_request.run_id or "",
+                    status="success",
+                    published=result.published,
+                    publish_status=result.publish_status,
+                    result=result.result,
+                    database_payload=result.database_payload,
+                    database_response=result.database_response,
+                )
+            )
+        except Exception as exc:
+            items.append(
+                BacktestBatchItemResult(
+                    symbol=symbol,
+                    run_id=single_request.run_id or "",
+                    status="failed",
+                    publish_status="failed",
+                    error=str(exc),
+                )
+            )
+
+    succeeded = [item.symbol for item in items if item.status == "success"]
+    failed = [item.symbol for item in items if item.status == "failed"]
+    published_count = sum(1 for item in items if item.published)
+    all_succeeded = bool(items) and not failed
+    if failed and succeeded:
+        publish_status = "partial_failure"
+    elif failed:
+        publish_status = "failed"
+    elif request.publish_to_database:
+        publish_status = "success"
+    else:
+        publish_status = "skipped"
+
+    return StandardAgentResponse(
+        status="success" if all_succeeded else "error",
+        data=BacktestBatchRunAndPublishResult(
+            batch_id=batch_id,
+            symbols=symbols,
+            items=items,
+            succeeded_symbols=succeeded,
+            failed_symbols=failed,
+            published_count=published_count,
+            published=(
+                request.publish_to_database
+                and all_succeeded
+                and published_count == len(items)
+            ),
+            publish_status=publish_status,
+            all_succeeded=all_succeeded,
+        ),
+        error=None if all_succeeded else "One or more symbol Backtests failed.",
     )
 
 

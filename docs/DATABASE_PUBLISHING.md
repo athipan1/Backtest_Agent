@@ -6,6 +6,7 @@
 
 ```http
 POST /backtest/run-and-publish
+POST /backtest/run-and-publish-batch
 ```
 
 This endpoint:
@@ -13,6 +14,10 @@ This endpoint:
 1. Runs the same local simulation as `POST /backtest/run`.
 2. Normalizes the result into the `Database_Agent` backtest payload shape.
 3. Publishes to `POST /backtests/runs` when `publish_to_database=true`.
+
+For batch requests, Backtest_Agent creates one independent simulation and one
+Database_Agent run per symbol. This matches Database_Agent's exact lookup API
+and prevents one symbol's result from authorizing another symbol.
 
 ## Hourly GitHub Actions Workflow
 
@@ -30,7 +35,8 @@ The workflow:
 1. Installs Python dependencies.
 2. Runs focused publisher tests.
 3. Executes `scripts/run_hourly_backtest.py`.
-4. Uploads `reports/hourly-backtest-result.json` as an artifact.
+4. Uploads `reports/hourly-backtest-result.json` plus one per-symbol report for
+   multi-symbol batches.
 
 ## Environment
 
@@ -51,6 +57,8 @@ Optional repository variables:
 ```bash
 BACKTEST_ACCOUNT_ID
 BACKTEST_SYMBOL
+BACKTEST_SYMBOLS
+BACKTEST_MAX_SYMBOLS
 BACKTEST_SKILL_ID
 BACKTEST_STRATEGY_ID
 BACKTEST_TIMEFRAME
@@ -62,6 +70,11 @@ BACKTEST_FEE_BPS
 BACKTEST_SLIPPAGE_BPS
 PUBLISH_TO_DATABASE
 ```
+
+`BACKTEST_SYMBOLS` is a comma-separated list and takes precedence over the
+legacy `BACKTEST_SYMBOL`. Duplicate symbols are removed. The hourly runner
+allows at most `BACKTEST_MAX_SYMBOLS` entries (default `10`) and fails before
+simulation when the configured limit is exceeded.
 
 If `DATABASE_AGENT_URL` is not configured, publishing is skipped and the simulation result is still returned.
 

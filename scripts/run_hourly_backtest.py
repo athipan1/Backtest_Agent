@@ -51,6 +51,10 @@ def _deterministic_run_id(payload: dict, fingerprint: str) -> str:
         "use_risk_agent": payload["use_risk_agent"],
         "max_trades_per_day": payload["max_trades_per_day"],
         "emergency_halt": payload["emergency_halt"],
+        "max_total_exposure_pct": payload["max_total_exposure_pct"],
+        "max_open_positions": payload["max_open_positions"],
+        "cash_reserve_pct": payload["cash_reserve_pct"],
+        "max_new_positions_per_bar": payload["max_new_positions_per_bar"],
         "force_close_at_end": payload["force_close_at_end"],
         "engine_version": ENGINE_VERSION,
         "timeframe": payload["timeframe"],
@@ -135,6 +139,10 @@ def _load_payload(provider=None) -> dict:
         "use_risk_agent": _bool_env("BACKTEST_USE_RISK_AGENT", True),
         "max_trades_per_day": int(os.getenv("BACKTEST_MAX_TRADES_PER_DAY", "5")),
         "emergency_halt": _bool_env("BACKTEST_EMERGENCY_HALT", False),
+        "max_total_exposure_pct": float(os.getenv("BACKTEST_MAX_TOTAL_EXPOSURE_PCT", "1.0")),
+        "max_open_positions": int(os.getenv("BACKTEST_MAX_OPEN_POSITIONS", "25")),
+        "cash_reserve_pct": float(os.getenv("BACKTEST_CASH_RESERVE_PCT", "0.0")),
+        "max_new_positions_per_bar": int(os.getenv("BACKTEST_MAX_NEW_POSITIONS_PER_BAR", "25")),
         "force_close_at_end": _bool_env("BACKTEST_FORCE_CLOSE_AT_END", False),
         "bars": {
             symbol: [bar.model_dump(mode="json") for bar in bars]

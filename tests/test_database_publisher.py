@@ -97,6 +97,11 @@ def test_build_database_backtest_payload_shapes_result_for_database_agent():
     assert payload["parameters"]["risk_per_trade"] == request.risk_per_trade
     assert payload["parameters"]["max_position_pct"] == request.max_position_pct
     assert payload["parameters"]["stop_loss_pct"] == request.stop_loss_pct
+    assert payload["parameters"]["max_total_exposure_pct"] == request.max_total_exposure_pct
+    assert payload["parameters"]["max_open_positions"] == request.max_open_positions
+    assert payload["parameters"]["cash_reserve_pct"] == request.cash_reserve_pct
+    assert payload["metadata"]["allocation_policy"] == "timestamp_batch_symbol_ascending"
+    assert payload["metadata"]["allocation_rejections"] == []
     assert payload["equity_curve"]
     assert payload["metadata"]["source_agent"] == "backtest-agent"
     assert payload["metadata"]["test"] is True

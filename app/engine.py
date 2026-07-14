@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from app.analytics import equal_weight_buy_and_hold_return, portfolio_analytics
 from app.models import (
     AllocationRejection,
     BacktestMetrics,
@@ -39,10 +40,13 @@ def sma(values: List[float], window: int) -> Optional[float]:
     return sum(values[-window:]) / window
 
 
-def max_drawdown(curve: List[EquityPoint]) -> float:
+def max_drawdown(
+    curve: List[EquityPoint],
+    initial_equity: float | None = None,
+) -> float:
     if not curve:
         return 0.0
-    peak = curve[0].equity
+    peak = initial_equity if initial_equity is not None else curve[0].equity
     worst = 0.0
     for point in curve:
         peak = max(peak, point.equity)
@@ -168,6 +172,9 @@ def _trade_metrics(
     *,
     positions: Dict[str, Position] | None = None,
     last_prices: Dict[str, float] | None = None,
+    periods_per_year: int = 252,
+    annual_risk_free_rate: float = 0.0,
+    benchmark_return_pct: float | None = None,
 ) -> BacktestMetrics:
     realized = [trade.realized_pnl for trade in trades if trade.side == "sell"]
     winners = [pnl for pnl in realized if pnl > 0]
@@ -193,6 +200,16 @@ def _trade_metrics(
         profit_factor = None if gross_profit > 0 else 0.0
     else:
         profit_factor = round(gross_profit / abs(gross_loss), 6)
+    drawdown = max_drawdown(curve, initial_equity)
+    analytics = portfolio_analytics(
+        initial_equity=initial_equity,
+        final_equity=final_equity,
+        curve=curve,
+        max_drawdown=drawdown,
+        periods_per_year=periods_per_year,
+        annual_risk_free_rate=annual_risk_free_rate,
+        benchmark_return_pct=benchmark_return_pct,
+    )
     return BacktestMetrics(
         initial_equity=round(initial_equity, 2),
         final_equity=round(final_equity, 2),
@@ -206,7 +223,14 @@ def _trade_metrics(
         gross_loss=gross_loss,
         profit_factor=profit_factor,
         expectancy=round(0.0 if trade_count == 0 else sum(realized) / trade_count, 2),
-        max_drawdown=max_drawdown(curve),
+        max_drawdown=drawdown,
+        annualized_return=analytics.annualized_return,
+        annualized_volatility=analytics.annualized_volatility,
+        sharpe_ratio=analytics.sharpe_ratio,
+        sortino_ratio=analytics.sortino_ratio,
+        calmar_ratio=analytics.calmar_ratio,
+        benchmark_return_pct=analytics.benchmark_return_pct,
+        excess_return_pct=analytics.excess_return_pct,
         realized_net_profit=realized_net_profit,
         unrealized_pnl=unrealized_pnl,
         open_position_count=sum(1 for position in open_positions.values() if position.quantity > 0),
@@ -579,6 +603,12 @@ def _run_backtest(
         equity_curve,
         positions=positions,
         last_prices=last_prices,
+        periods_per_year=request.periods_per_year,
+        annual_risk_free_rate=request.annual_risk_free_rate,
+        benchmark_return_pct=equal_weight_buy_and_hold_return(
+            request.symbols,
+            bars_by_symbol,
+        ),
     )
     metrics.risk_rejections = len(risk_rejections)
     metrics.kill_switch_events = sum(

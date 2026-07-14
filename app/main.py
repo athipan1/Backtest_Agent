@@ -10,6 +10,8 @@ from app.compare import compare_strategies
 from app.models import (
     BacktestCompareRequest,
     BacktestCompareResult,
+    BacktestRobustnessRequest,
+    BacktestRobustnessResult,
     BacktestRunRequest,
     BacktestRunResult,
     HealthData,
@@ -20,6 +22,7 @@ from app.models import (
     WalkForwardResult,
 )
 from app.publisher import publish_backtest_result
+from app.robustness import run_robustness_analysis
 from app.risk_engine import run_backtest_with_risk as run_backtest
 from app.system_contract import router as system_contract_router
 from app.walk_forward import run_walk_forward_validation
@@ -118,6 +121,19 @@ def health() -> StandardAgentResponse[HealthData]:
 @app.post("/backtest/run", response_model=StandardAgentResponse[BacktestRunResult])
 def backtest_run(request: BacktestRunRequest) -> StandardAgentResponse[BacktestRunResult]:
     return StandardAgentResponse(status="success", data=run_backtest(request))
+
+
+@app.post(
+    "/backtest/robustness",
+    response_model=StandardAgentResponse[BacktestRobustnessResult],
+)
+def backtest_robustness(
+    request: BacktestRobustnessRequest,
+) -> StandardAgentResponse[BacktestRobustnessResult]:
+    return StandardAgentResponse(
+        status="success",
+        data=run_robustness_analysis(request),
+    )
 
 
 @app.post("/backtest/run-and-publish", response_model=StandardAgentResponse[BacktestRunAndPublishResult])

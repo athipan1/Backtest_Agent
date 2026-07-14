@@ -63,6 +63,7 @@ def ready() -> Dict[str, Any]:
             "run_endpoint": "/backtest/run",
             "compare_endpoint": "/backtest/compare",
             "walk_forward_endpoint": "/backtest/walk-forward",
+            "robustness_endpoint": "/backtest/robustness",
             "report_endpoint": "/backtest/report",
             "supported_strategies": [
                 "sma_crossover",

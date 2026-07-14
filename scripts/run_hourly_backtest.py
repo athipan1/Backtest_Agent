@@ -57,6 +57,8 @@ def _deterministic_run_id(payload: dict, fingerprint: str) -> str:
         "max_new_positions_per_bar": payload["max_new_positions_per_bar"],
         "periods_per_year": payload["periods_per_year"],
         "annual_risk_free_rate": payload["annual_risk_free_rate"],
+        "max_volume_participation_pct": payload["max_volume_participation_pct"],
+        "market_impact_bps": payload["market_impact_bps"],
         "force_close_at_end": payload["force_close_at_end"],
         "engine_version": ENGINE_VERSION,
         "timeframe": payload["timeframe"],
@@ -147,6 +149,8 @@ def _load_payload(provider=None) -> dict:
         "max_new_positions_per_bar": int(os.getenv("BACKTEST_MAX_NEW_POSITIONS_PER_BAR", "25")),
         "periods_per_year": int(os.getenv("BACKTEST_PERIODS_PER_YEAR", "252")),
         "annual_risk_free_rate": float(os.getenv("BACKTEST_ANNUAL_RISK_FREE_RATE", "0.0")),
+        "max_volume_participation_pct": float(os.getenv("BACKTEST_MAX_VOLUME_PARTICIPATION_PCT", "1.0")),
+        "market_impact_bps": float(os.getenv("BACKTEST_MARKET_IMPACT_BPS", "0.0")),
         "force_close_at_end": _bool_env("BACKTEST_FORCE_CLOSE_AT_END", False),
         "bars": {
             symbol: [bar.model_dump(mode="json") for bar in bars]

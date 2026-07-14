@@ -8,7 +8,7 @@ from app.database_client import DatabaseAgentClient
 from app.models import BacktestRunRequest, BacktestRunResult, SimulatedTrade
 
 
-ENGINE_VERSION = "backtest-agent-0.5.0"
+ENGINE_VERSION = "backtest-agent-0.6.0"
 
 
 def _iso(value: datetime) -> str:
@@ -49,36 +49,60 @@ def _trade_pairs(trades: List[SimulatedTrade]) -> List[Dict[str, Any]]:
     outcomes yet.
     """
 
-    open_entries: Dict[str, SimulatedTrade] = {}
+    open_entries: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
     for trade in trades:
         symbol = trade.symbol.upper()
         if trade.side == "buy":
-            open_entries[symbol] = trade
+            open_entries[symbol] = {
+                "trade": trade,
+                "remaining_quantity": trade.quantity,
+                "remaining_fees": trade.fees,
+            }
             continue
         if trade.side != "sell" or symbol not in open_entries:
             continue
-        entry = open_entries.pop(symbol)
+        state = open_entries[symbol]
+        entry = state["trade"]
+        remaining_quantity = float(state["remaining_quantity"])
+        closed_quantity = min(trade.quantity, remaining_quantity)
+        entry_fee_share = (
+            float(state["remaining_fees"])
+            * closed_quantity
+            / remaining_quantity
+        )
         rows.append(
             {
                 "symbol": symbol,
                 "side": entry.side,
-                "quantity": entry.quantity,
+                "quantity": closed_quantity,
                 "entry_price": entry.price,
                 "exit_price": trade.price,
                 "realized_pl": trade.realized_pnl,
-                "fees": round(entry.fees + trade.fees, 2),
+                "fees": round(entry_fee_share + trade.fees, 2),
                 "outcome": _outcome(trade.realized_pnl),
                 "entry_time": _iso(entry.timestamp),
                 "exit_time": _iso(trade.timestamp),
                 "metadata": {
                     "entry_reason": entry.reason,
                     "exit_reason": trade.reason,
-                    "entry_fees": entry.fees,
+                    "entry_fees": round(entry_fee_share, 2),
                     "exit_fees": trade.fees,
+                    "entry_fill_status": entry.fill_status,
+                    "entry_requested_quantity": entry.requested_quantity,
+                    "entry_participation_rate": entry.participation_rate,
+                    "entry_market_impact_bps": entry.market_impact_bps,
+                    "fill_status": trade.fill_status,
+                    "requested_quantity": trade.requested_quantity,
+                    "participation_rate": trade.participation_rate,
+                    "market_impact_bps": trade.market_impact_bps,
                 },
             }
         )
+        state["remaining_quantity"] = remaining_quantity - closed_quantity
+        state["remaining_fees"] = float(state["remaining_fees"]) - entry_fee_share
+        if state["remaining_quantity"] <= 1e-12:
+            open_entries.pop(symbol)
     return rows
 
 
@@ -143,6 +167,8 @@ def build_database_backtest_payload(
             "max_new_positions_per_bar": request.max_new_positions_per_bar,
             "periods_per_year": request.periods_per_year,
             "annual_risk_free_rate": request.annual_risk_free_rate,
+            "max_volume_participation_pct": request.max_volume_participation_pct,
+            "market_impact_bps": request.market_impact_bps,
         },
         "metrics": {
             "initial_equity": metrics.initial_equity,
@@ -164,6 +190,8 @@ def build_database_backtest_payload(
             "unrealized_pnl": metrics.unrealized_pnl,
             "open_position_count": metrics.open_position_count,
             "allocation_rejections": metrics.allocation_rejections,
+            "partial_fills": metrics.partial_fills,
+            "liquidity_rejections": metrics.liquidity_rejections,
             "total_trades": metrics.trade_count,
             "winning_trades": metrics.winning_trades,
             "losing_trades": metrics.losing_trades,
@@ -180,9 +208,14 @@ def build_database_backtest_payload(
             "position_sizing_model": result.position_sizing_model,
             "allocation_policy": result.allocation_policy,
             "benchmark_model": result.benchmark_model,
+            "liquidity_model": result.liquidity_model,
             "allocation_rejections": [
                 item.model_dump(mode="json")
                 for item in result.allocation_rejections
+            ],
+            "liquidity_rejections": [
+                item.model_dump(mode="json")
+                for item in result.liquidity_rejections
             ],
             "force_close_at_end": request.force_close_at_end,
             "warnings": result.warnings,

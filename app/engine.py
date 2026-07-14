@@ -4,12 +4,21 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from app.analytics import equal_weight_buy_and_hold_return, portfolio_analytics
+from app.execution import (
+    buy_execution_price,
+    linear_market_impact_bps,
+    max_entry_quantity,
+    participation_rate,
+    sell_execution_price,
+    volume_capacity,
+)
 from app.models import (
     AllocationRejection,
     BacktestMetrics,
     BacktestRunRequest,
     BacktestRunResult,
     EquityPoint,
+    LiquidityRejection,
     PriceBar,
     RiskCheckPayload,
     RiskRejection,
@@ -25,6 +34,7 @@ class Position:
     entry_fees: float = 0.0
     stop_loss: float | None = None
     take_profit: float | None = None
+    realized_pnl_accumulated: float = 0.0
 
     def reset(self) -> None:
         self.quantity = 0.0
@@ -32,6 +42,7 @@ class Position:
         self.entry_fees = 0.0
         self.stop_loss = None
         self.take_profit = None
+        self.realized_pnl_accumulated = 0.0
 
 
 def sma(values: List[float], window: int) -> Optional[float]:
@@ -115,29 +126,60 @@ def _exit_position(
     reason: str,
     fee_bps: float,
     trades: List[SimulatedTrade],
-) -> float:
-    proceeds = exit_price * position.quantity
+    quantity: float | None = None,
+    requested_quantity: float | None = None,
+    bar_volume: float = 0.0,
+    market_impact_bps: float = 0.0,
+) -> tuple[float, float, bool]:
+    quantity_before = position.quantity
+    fill_quantity = min(quantity_before, quantity or quantity_before)
+    if fill_quantity <= 0:
+        return cash, 0.0, False
+    order_quantity = requested_quantity or quantity_before
+    entry_fee_share = position.entry_fees * (fill_quantity / quantity_before)
+    proceeds = exit_price * fill_quantity
     fees = _fee(proceeds, fee_bps)
     realized_pnl = (
-        (exit_price - position.average_price) * position.quantity
-        - position.entry_fees
+        (exit_price - position.average_price) * fill_quantity
+        - entry_fee_share
         - fees
     )
     cash += proceeds - fees
+    position.realized_pnl_accumulated += realized_pnl
+    position.quantity -= fill_quantity
+    position.entry_fees -= entry_fee_share
+    position_closed = position.quantity <= 1e-12
+    round_trip_realized_pnl = (
+        round(position.realized_pnl_accumulated, 2)
+        if position_closed
+        else None
+    )
     trades.append(
         SimulatedTrade(
             symbol=symbol,
             side="sell",
-            quantity=position.quantity,
+            quantity=fill_quantity,
             price=round(exit_price, 4),
             fees=round(fees, 2),
             timestamp=timestamp,
             realized_pnl=round(realized_pnl, 2),
             reason=reason,
+            requested_quantity=order_quantity,
+            fill_status=(
+                "partial" if fill_quantity < order_quantity else "filled"
+            ),
+            participation_rate=round(
+                participation_rate(fill_quantity, bar_volume),
+                6,
+            ),
+            market_impact_bps=round(market_impact_bps, 6),
+            position_closed=position_closed,
+            round_trip_realized_pnl=round_trip_realized_pnl,
         )
     )
-    position.reset()
-    return cash
+    if position_closed:
+        position.reset()
+    return cash, fill_quantity, position_closed
 
 
 def _intrabar_exit_price(position: Position, bar: PriceBar) -> tuple[float | None, str | None]:
@@ -176,12 +218,21 @@ def _trade_metrics(
     annual_risk_free_rate: float = 0.0,
     benchmark_return_pct: float | None = None,
 ) -> BacktestMetrics:
-    realized = [trade.realized_pnl for trade in trades if trade.side == "sell"]
-    winners = [pnl for pnl in realized if pnl > 0]
-    losers = [pnl for pnl in realized if pnl < 0]
+    realized_fills = [
+        trade.realized_pnl for trade in trades if trade.side == "sell"
+    ]
+    realized_trades = [
+        trade.round_trip_realized_pnl
+        for trade in trades
+        if trade.side == "sell"
+        and trade.position_closed
+        and trade.round_trip_realized_pnl is not None
+    ]
+    winners = [pnl for pnl in realized_trades if pnl > 0]
+    losers = [pnl for pnl in realized_trades if pnl < 0]
     gross_profit = round(sum(winners), 2)
     gross_loss = round(sum(losers), 2)
-    trade_count = len(realized)
+    trade_count = len(realized_trades)
     net_profit = round(final_equity - initial_equity, 2)
     open_positions = positions or {}
     marks = last_prices or {}
@@ -195,7 +246,7 @@ def _trade_metrics(
         ),
         2,
     )
-    realized_net_profit = round(sum(realized), 2)
+    realized_net_profit = round(sum(realized_fills), 2)
     if gross_loss == 0:
         profit_factor = None if gross_profit > 0 else 0.0
     else:
@@ -222,7 +273,10 @@ def _trade_metrics(
         gross_profit=gross_profit,
         gross_loss=gross_loss,
         profit_factor=profit_factor,
-        expectancy=round(0.0 if trade_count == 0 else sum(realized) / trade_count, 2),
+        expectancy=round(
+            0.0 if trade_count == 0 else sum(realized_trades) / trade_count,
+            2,
+        ),
         max_drawdown=drawdown,
         annualized_return=analytics.annualized_return,
         annualized_volatility=analytics.annualized_volatility,
@@ -321,8 +375,12 @@ def _run_backtest(
     equity_curve: List[EquityPoint] = []
     risk_rejections: List[RiskRejection] = []
     allocation_rejections: List[AllocationRejection] = []
+    liquidity_rejections: List[LiquidityRejection] = []
     warnings: List[str] = []
     pending_signals: Dict[str, str] = {symbol.upper(): "hold" for symbol in request.symbols}
+    forced_exit_reasons: Dict[str, str | None] = {
+        symbol.upper(): None for symbol in request.symbols
+    }
 
     bars_by_symbol = {symbol.upper(): _bars_for_symbol(request, symbol) for symbol in request.symbols}
     for symbol, bars in bars_by_symbol.items():
@@ -331,10 +389,20 @@ def _run_backtest(
 
     last_prices: Dict[str, float] = {}
     last_bars: Dict[str, PriceBar] = {}
+    last_remaining_liquidity: Dict[str, int] = {}
     entries_by_day: Dict[str, int] = {}
     for timestamp, bars_at_timestamp in _bars_grouped_by_timestamp(request):
         symbols = sorted(bars_at_timestamp)
         exited_at_open: set[str] = set()
+        partial_signal_exits: set[str] = set()
+        remaining_liquidity = {
+            symbol: volume_capacity(
+                bars_at_timestamp[symbol].volume,
+                request.max_volume_participation_pct,
+            )
+            for symbol in symbols
+        }
+        last_remaining_liquidity.update(remaining_liquidity)
 
         # Every symbol in the batch sees the same timestamp-level open snapshot.
         for symbol in symbols:
@@ -342,79 +410,163 @@ def _run_backtest(
             last_prices[symbol] = bar.open
             last_bars[symbol] = bar
 
-        # Broker-side protection that gaps through its trigger executes first.
+        # Previously triggered exits and new gap-through protection execute first.
         for symbol in symbols:
             bar = bars_at_timestamp[symbol]
             position = positions[symbol]
-            exit_price, exit_reason = _gap_exit_price(position, bar)
-            if exit_price is None or exit_reason is None:
+            exit_reason = forced_exit_reasons[symbol]
+            exit_reference = bar.open if exit_reason is not None else None
+            if exit_reason is None:
+                exit_reference, exit_reason = _gap_exit_price(position, bar)
+            if exit_reference is None or exit_reason is None:
                 continue
-            cash = _exit_position(
+            requested_quantity = position.quantity
+            fill_quantity = min(
+                requested_quantity,
+                remaining_liquidity[symbol],
+            )
+            if fill_quantity <= 0:
+                liquidity_rejections.append(
+                    LiquidityRejection(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        side="sell",
+                        requested_quantity=requested_quantity,
+                    )
+                )
+                forced_exit_reasons[symbol] = (
+                    None if exit_reason == "take_profit" else exit_reason
+                )
+                exited_at_open.add(symbol)
+                continue
+            impact_bps = linear_market_impact_bps(
+                fill_quantity,
+                bar.volume,
+                request.market_impact_bps,
+            )
+            cash, filled, closed = _exit_position(
                 symbol=symbol,
                 position=position,
                 cash=cash,
-                exit_price=_sell_price(exit_price, request.slippage_bps),
+                exit_price=sell_execution_price(
+                    exit_reference,
+                    slippage_bps=request.slippage_bps,
+                    market_impact_bps=request.market_impact_bps,
+                    quantity=fill_quantity,
+                    volume=bar.volume,
+                ),
                 timestamp=timestamp,
                 reason=exit_reason,
                 fee_bps=request.fee_bps,
                 trades=trades,
+                quantity=fill_quantity,
+                requested_quantity=requested_quantity,
+                bar_volume=bar.volume,
+                market_impact_bps=impact_bps,
+            )
+            remaining_liquidity[symbol] -= int(filled)
+            last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
+            forced_exit_reasons[symbol] = (
+                None
+                if closed or exit_reason == "take_profit"
+                else exit_reason
             )
             exited_at_open.add(symbol)
 
         # Pending close-generated sell signals also execute at this open.
         for symbol in symbols:
             position = positions[symbol]
-            if pending_signals[symbol] != "sell" or position.quantity <= 0:
+            if (
+                symbol in exited_at_open
+                or pending_signals[symbol] != "sell"
+                or position.quantity <= 0
+            ):
                 continue
-            cash = _exit_position(
+            bar = bars_at_timestamp[symbol]
+            requested_quantity = position.quantity
+            fill_quantity = min(
+                requested_quantity,
+                remaining_liquidity[symbol],
+            )
+            if fill_quantity <= 0:
+                liquidity_rejections.append(
+                    LiquidityRejection(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        side="sell",
+                        requested_quantity=requested_quantity,
+                    )
+                )
+                partial_signal_exits.add(symbol)
+                exited_at_open.add(symbol)
+                continue
+            impact_bps = linear_market_impact_bps(
+                fill_quantity,
+                bar.volume,
+                request.market_impact_bps,
+            )
+            cash, filled, closed = _exit_position(
                 symbol=symbol,
                 position=position,
                 cash=cash,
-                exit_price=_sell_price(
-                    bars_at_timestamp[symbol].open,
-                    request.slippage_bps,
+                exit_price=sell_execution_price(
+                    bar.open,
+                    slippage_bps=request.slippage_bps,
+                    market_impact_bps=request.market_impact_bps,
+                    quantity=fill_quantity,
+                    volume=bar.volume,
                 ),
                 timestamp=timestamp,
                 reason=request.strategy,
                 fee_bps=request.fee_bps,
                 trades=trades,
+                quantity=fill_quantity,
+                requested_quantity=requested_quantity,
+                bar_volume=bar.volume,
+                market_impact_bps=impact_bps,
             )
+            remaining_liquidity[symbol] -= int(filled)
+            last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
+            if not closed:
+                partial_signal_exits.add(symbol)
             exited_at_open.add(symbol)
 
         portfolio_equity = _portfolio_value(cash, positions, last_prices)
         reserve_value = portfolio_equity * request.cash_reserve_pct
         max_exposure_value = portfolio_equity * request.max_total_exposure_pct
-        candidates: List[tuple[str, float, float, int]] = []
+        candidates: List[tuple[str, float, int]] = []
 
         for symbol in symbols:
             if (
                 pending_signals[symbol] != "buy"
                 or positions[symbol].quantity > 0
                 or symbol in exited_at_open
+                or forced_exit_reasons[symbol] is not None
             ):
                 continue
-            entry_price = _buy_price(
-                bars_at_timestamp[symbol].open,
+            reference_price = bars_at_timestamp[symbol].open
+            sizing_price = _buy_price(
+                reference_price,
                 request.slippage_bps,
             )
-            stop_loss = _stop_loss_price(entry_price, request)
+            stop_loss = _stop_loss_price(sizing_price, request)
             requested_quantity = _position_size(
                 cash=max(0.0, cash - reserve_value),
                 current_equity=portfolio_equity,
-                entry_price=entry_price,
+                entry_price=sizing_price,
                 stop_loss=stop_loss,
                 risk_per_trade=request.risk_per_trade,
                 max_position_pct=request.max_position_pct,
                 fee_bps=request.fee_bps,
             )
-            candidates.append(
-                (symbol, entry_price, stop_loss, requested_quantity)
-            )
+            candidates.append((symbol, reference_price, requested_quantity))
 
         # The stable symbol order makes allocation independent of request order.
         candidates.sort(key=lambda item: item[0])
         new_positions = 0
-        for symbol, entry_price, stop_loss, requested_quantity in candidates:
+        for symbol, reference_price, requested_quantity in candidates:
+            bar = bars_at_timestamp[symbol]
+            sizing_price = _buy_price(reference_price, request.slippage_bps)
             open_positions = sum(
                 1 for position in positions.values() if position.quantity > 0
             )
@@ -423,15 +575,31 @@ def _run_backtest(
                 max_exposure_value - _invested_value(positions, last_prices),
             )
             remaining_cash = max(0.0, cash - reserve_value)
-            quantity_by_exposure = int(remaining_exposure / entry_price)
-            quantity_by_cash = int(
-                remaining_cash
-                / (entry_price * (1.0 + request.fee_bps / 10000.0))
-            )
-            approved_quantity = min(
+            available_volume_quantity = remaining_liquidity[symbol]
+            if requested_quantity > 0 and available_volume_quantity <= 0:
+                liquidity_rejections.append(
+                    LiquidityRejection(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        side="buy",
+                        requested_quantity=requested_quantity,
+                    )
+                )
+                continue
+            approved_quantity = max_entry_quantity(
                 requested_quantity,
-                quantity_by_exposure,
-                quantity_by_cash,
+                available_volume_quantity=available_volume_quantity,
+                reference_price=reference_price,
+                bar_volume=bar.volume,
+                slippage_bps=request.slippage_bps,
+                market_impact_bps=request.market_impact_bps,
+                fee_bps=request.fee_bps,
+                remaining_cash=remaining_cash,
+                remaining_exposure=remaining_exposure,
+                portfolio_equity=portfolio_equity,
+                risk_per_trade=request.risk_per_trade,
+                max_position_pct=request.max_position_pct,
+                stop_loss_pct=request.stop_loss_pct,
             )
 
             limit_hit = (
@@ -449,7 +617,7 @@ def _run_backtest(
                             new_positions=new_positions,
                             remaining_exposure=remaining_exposure,
                             remaining_cash=remaining_cash,
-                            entry_price=entry_price,
+                            entry_price=sizing_price,
                             request=request,
                         ),
                     )
@@ -457,6 +625,14 @@ def _run_backtest(
                 continue
 
             day_key = timestamp.date().isoformat()
+            entry_price = buy_execution_price(
+                reference_price,
+                slippage_bps=request.slippage_bps,
+                market_impact_bps=request.market_impact_bps,
+                quantity=approved_quantity,
+                volume=bar.volume,
+            )
+            stop_loss = _stop_loss_price(entry_price, request)
             if risk_adapter is not None:
                 decision = risk_adapter.evaluate(
                     RiskCheckPayload(
@@ -493,6 +669,15 @@ def _run_backtest(
                     continue
                 approved_quantity = int(decision.final_quantity)
 
+            entry_price = buy_execution_price(
+                reference_price,
+                slippage_bps=request.slippage_bps,
+                market_impact_bps=request.market_impact_bps,
+                quantity=approved_quantity,
+                volume=bar.volume,
+            )
+            stop_loss = _stop_loss_price(entry_price, request)
+
             cost = entry_price * approved_quantity
             fees = _fee(cost, request.fee_bps)
             if approved_quantity <= 0 or cash < cost + fees:
@@ -507,6 +692,8 @@ def _run_backtest(
                 continue
 
             cash -= cost + fees
+            remaining_liquidity[symbol] -= approved_quantity
+            last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
             entries_by_day[day_key] = entries_by_day.get(day_key, 0) + 1
             new_positions += 1
             position = positions[symbol]
@@ -528,6 +715,24 @@ def _run_backtest(
                     fees=round(fees, 2),
                     timestamp=timestamp,
                     reason=request.strategy,
+                    requested_quantity=requested_quantity,
+                    fill_status=(
+                        "partial"
+                        if approved_quantity < requested_quantity
+                        else "filled"
+                    ),
+                    participation_rate=round(
+                        participation_rate(approved_quantity, bar.volume),
+                        6,
+                    ),
+                    market_impact_bps=round(
+                        linear_market_impact_bps(
+                            approved_quantity,
+                            bar.volume,
+                            request.market_impact_bps,
+                        ),
+                        6,
+                    ),
                 )
             )
 
@@ -535,31 +740,79 @@ def _run_backtest(
         for symbol in symbols:
             bar = bars_at_timestamp[symbol]
             position = positions[symbol]
+            if (
+                symbol in exited_at_open
+                or forced_exit_reasons[symbol] is not None
+            ):
+                continue
             exit_price, exit_reason = _intrabar_exit_price(position, bar)
             if exit_price is None or exit_reason is None:
                 continue
-            cash = _exit_position(
+            requested_quantity = position.quantity
+            fill_quantity = min(
+                requested_quantity,
+                remaining_liquidity[symbol],
+            )
+            if fill_quantity <= 0:
+                liquidity_rejections.append(
+                    LiquidityRejection(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        side="sell",
+                        requested_quantity=requested_quantity,
+                    )
+                )
+                forced_exit_reasons[symbol] = (
+                    None if exit_reason == "take_profit" else exit_reason
+                )
+                continue
+            impact_bps = linear_market_impact_bps(
+                fill_quantity,
+                bar.volume,
+                request.market_impact_bps,
+            )
+            cash, filled, closed = _exit_position(
                 symbol=symbol,
                 position=position,
                 cash=cash,
-                exit_price=_sell_price(exit_price, request.slippage_bps),
+                exit_price=sell_execution_price(
+                    exit_price,
+                    slippage_bps=request.slippage_bps,
+                    market_impact_bps=request.market_impact_bps,
+                    quantity=fill_quantity,
+                    volume=bar.volume,
+                ),
                 timestamp=timestamp,
                 reason=exit_reason,
                 fee_bps=request.fee_bps,
                 trades=trades,
+                quantity=fill_quantity,
+                requested_quantity=requested_quantity,
+                bar_volume=bar.volume,
+                market_impact_bps=impact_bps,
+            )
+            remaining_liquidity[symbol] -= int(filled)
+            last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
+            forced_exit_reasons[symbol] = (
+                None
+                if closed or exit_reason == "take_profit"
+                else exit_reason
             )
 
         for symbol in symbols:
             bar = bars_at_timestamp[symbol]
             closes[symbol].append(bar.close)
             history[symbol].append(bar)
-            pending_signals[symbol] = strategy_signal(
-                request.strategy,
-                closes[symbol],
-                history[symbol],
-                request.fast_window,
-                request.slow_window,
-            )
+            if symbol in partial_signal_exits and positions[symbol].quantity > 0:
+                pending_signals[symbol] = "sell"
+            else:
+                pending_signals[symbol] = strategy_signal(
+                    request.strategy,
+                    closes[symbol],
+                    history[symbol],
+                    request.fast_window,
+                    request.slow_window,
+                )
             last_prices[symbol] = bar.close
 
         equity_curve.append(
@@ -574,21 +827,62 @@ def _run_backtest(
             if position.quantity <= 0 or symbol not in last_bars:
                 continue
             last_bar = last_bars[symbol]
-            cash = _exit_position(
+            requested_quantity = position.quantity
+            fill_quantity = min(
+                requested_quantity,
+                last_remaining_liquidity.get(symbol, 0),
+            )
+            if fill_quantity <= 0:
+                liquidity_rejections.append(
+                    LiquidityRejection(
+                        symbol=symbol,
+                        timestamp=last_bar.timestamp,
+                        side="sell",
+                        requested_quantity=requested_quantity,
+                    )
+                )
+                warnings.append(
+                    f"{symbol} force close incomplete due to bar volume limit"
+                )
+                continue
+            impact_bps = linear_market_impact_bps(
+                fill_quantity,
+                last_bar.volume,
+                request.market_impact_bps,
+            )
+            cash, filled, closed = _exit_position(
                 symbol=symbol,
                 position=position,
                 cash=cash,
-                exit_price=_sell_price(last_bar.close, request.slippage_bps),
+                exit_price=sell_execution_price(
+                    last_bar.close,
+                    slippage_bps=request.slippage_bps,
+                    market_impact_bps=request.market_impact_bps,
+                    quantity=fill_quantity,
+                    volume=last_bar.volume,
+                ),
                 timestamp=last_bar.timestamp,
                 reason="end_of_data",
                 fee_bps=request.fee_bps,
                 trades=trades,
+                quantity=fill_quantity,
+                requested_quantity=requested_quantity,
+                bar_volume=last_bar.volume,
+                market_impact_bps=impact_bps,
             )
+            last_remaining_liquidity[symbol] -= int(filled)
+            if not closed:
+                warnings.append(
+                    f"{symbol} force close incomplete due to bar volume limit"
+                )
         if last_bars:
             final_timestamp = max(bar.timestamp for bar in last_bars.values())
             final_point = EquityPoint(
                 timestamp=final_timestamp,
-                equity=round(cash, 2),
+                equity=round(
+                    _portfolio_value(cash, positions, last_prices),
+                    2,
+                ),
             )
             if equity_curve and equity_curve[-1].timestamp == final_timestamp:
                 equity_curve[-1] = final_point
@@ -615,6 +909,10 @@ def _run_backtest(
         1 for item in risk_rejections if item.kill_switch_active
     )
     metrics.allocation_rejections = len(allocation_rejections)
+    metrics.partial_fills = sum(
+        1 for trade in trades if trade.fill_status == "partial"
+    )
+    metrics.liquidity_rejections = len(liquidity_rejections)
     return BacktestRunResult(
         strategy=request.strategy,
         symbols=[symbol.upper() for symbol in request.symbols],
@@ -623,6 +921,7 @@ def _run_backtest(
         equity_curve=equity_curve,
         risk_rejections=risk_rejections,
         allocation_rejections=allocation_rejections,
+        liquidity_rejections=liquidity_rejections,
         warnings=warnings,
     )
 

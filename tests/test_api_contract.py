@@ -43,6 +43,7 @@ def test_ready_endpoint_uses_contract_response():
     payload = response.json()
     assert_contract_response(payload)
     assert payload["data"]["ready"] is True
+    assert payload["data"]["robustness_endpoint"] == "/backtest/robustness"
     assert payload["metadata"]["contract_source"] == "backtest-agent-runtime-contract"
 
 

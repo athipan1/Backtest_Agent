@@ -38,6 +38,7 @@ PYTHONPATH=. pytest -q
 
 - `GET /health`
 - `POST /backtest/run`
+- `POST /backtest/robustness`
 - `POST /backtest/compare`
 - `POST /backtest/walk-forward`
 - `POST /backtest/report`
@@ -184,6 +185,29 @@ BACKTEST_MARKET_IMPACT_BPS
 
 Fill status, requested versus filled quantity, participation, impact, and
 liquidity rejections are persisted with Database_Agent evidence.
+
+## Strategy robustness testing
+
+`POST /backtest/robustness` runs the baseline backtest and two deterministic
+robustness checks:
+
+1. Monte Carlo bootstraps completed round-trip trade P/L with replacement. It
+   reports 5th/50th/95th-percentile final equity, probability of loss, and
+   drawdown distribution.
+2. Parameter sensitivity reruns the same data and execution policy across the
+   valid neighboring `fast_window` and `slow_window` combinations. It reports
+   the profitable-neighbor percentage, median/worst/best return, and baseline
+   rank within the local parameter neighborhood.
+
+Monte Carlo uses a local seeded random generator, so identical input and seed
+produce identical output. The default requires at least five completed trades;
+otherwise it returns `insufficient_data` instead of fabricated confidence. Set
+`force_close_at_end=true` when the analysis should include the final open
+position.
+
+The trade-P/L bootstrap is an approximation: it tests outcome-order and sample
+risk but does not synthesize new market bars. Sensitivity results should be
+combined with walk-forward validation before promotion to paper trading.
 
 ## Next phases
 

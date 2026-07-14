@@ -297,6 +297,57 @@ class BacktestRunResult(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class BacktestRobustnessRequest(BacktestRunRequest):
+    monte_carlo_simulations: int = Field(default=1000, ge=100, le=10000)
+    monte_carlo_seed: int = 42
+    min_monte_carlo_trades: int = Field(default=5, ge=2)
+    sensitivity_fast_delta: int = Field(default=1, ge=1, le=50)
+    sensitivity_slow_delta: int = Field(default=1, ge=1, le=50)
+
+
+class MonteCarloResult(BaseModel):
+    status: Literal["completed", "insufficient_data"]
+    method: str = "closed_trade_pnl_bootstrap"
+    simulations: int
+    seed: int
+    source_trade_count: int
+    trades_per_simulation: int
+    median_final_equity: Optional[float] = None
+    p05_final_equity: Optional[float] = None
+    p95_final_equity: Optional[float] = None
+    probability_of_loss: Optional[float] = None
+    median_max_drawdown: Optional[float] = None
+    p05_max_drawdown: Optional[float] = None
+    reason: Optional[str] = None
+
+
+class SensitivityScenarioResult(BaseModel):
+    fast_window: int
+    slow_window: int
+    metrics: BacktestMetrics
+
+
+class ParameterSensitivityResult(BaseModel):
+    scenario_count: int
+    baseline_fast_window: int
+    baseline_slow_window: int
+    fast_delta: int
+    slow_delta: int
+    profitable_scenario_pct: Optional[float] = None
+    median_return_pct: Optional[float] = None
+    worst_return_pct: Optional[float] = None
+    best_return_pct: Optional[float] = None
+    baseline_rank_by_return: Optional[int] = None
+    scenarios: List[SensitivityScenarioResult] = Field(default_factory=list)
+
+
+class BacktestRobustnessResult(BaseModel):
+    baseline: BacktestRunResult
+    monte_carlo: MonteCarloResult
+    sensitivity: ParameterSensitivityResult
+    warnings: List[str] = Field(default_factory=list)
+
+
 class StrategyComparisonResult(BaseModel):
     rank: int
     name: str

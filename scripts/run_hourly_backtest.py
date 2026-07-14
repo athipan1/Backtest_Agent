@@ -19,6 +19,7 @@ from app.main import (
     backtest_run_and_publish_batch,
 )
 from app.data_provider import AlpacaMarketDataProvider, dataset_fingerprint
+from app.publisher import ENGINE_VERSION
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -43,6 +44,8 @@ def _deterministic_run_id(payload: dict, fingerprint: str) -> str:
         "slow_window": payload["slow_window"],
         "fee_bps": payload["fee_bps"],
         "slippage_bps": payload["slippage_bps"],
+        "force_close_at_end": payload["force_close_at_end"],
+        "engine_version": ENGINE_VERSION,
         "timeframe": payload["timeframe"],
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()
@@ -118,6 +121,7 @@ def _load_payload(provider=None) -> dict:
         "slow_window": int(os.getenv("BACKTEST_SLOW_WINDOW", "3")),
         "fee_bps": float(os.getenv("BACKTEST_FEE_BPS", "0")),
         "slippage_bps": float(os.getenv("BACKTEST_SLIPPAGE_BPS", "0")),
+        "force_close_at_end": _bool_env("BACKTEST_FORCE_CLOSE_AT_END", False),
         "bars": {
             symbol: [bar.model_dump(mode="json") for bar in bars]
             for symbol, bars in normalized_bars.items()

@@ -30,6 +30,7 @@ def _candidate_to_run_request(request: WalkForwardRequest, bars: Dict[str, List[
         use_risk_agent=request.use_risk_agent,
         emergency_halt=request.emergency_halt,
         max_trades_per_day=request.max_trades_per_day,
+        force_close_at_end=request.force_close_at_end,
     )
 
 
@@ -77,6 +78,7 @@ def run_walk_forward_validation(request: WalkForwardRequest) -> WalkForwardResul
             use_risk_agent=request.use_risk_agent,
             emergency_halt=request.emergency_halt,
             max_trades_per_day=request.max_trades_per_day,
+            force_close_at_end=request.force_close_at_end,
         )
     )
 

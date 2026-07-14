@@ -56,6 +56,7 @@ class BacktestRunRequest(BaseModel):
     use_risk_agent: bool = True
     emergency_halt: bool = False
     max_trades_per_day: int = Field(default=5, ge=1)
+    force_close_at_end: bool = False
 
     @model_validator(mode="after")
     def validate_windows(self) -> "BacktestRunRequest":
@@ -99,6 +100,7 @@ class BacktestCompareRequest(BaseModel):
     use_risk_agent: bool = True
     emergency_halt: bool = False
     max_trades_per_day: int = Field(default=5, ge=1)
+    force_close_at_end: bool = False
 
     @model_validator(mode="after")
     def validate_compare_bars(self) -> "BacktestCompareRequest":
@@ -125,6 +127,7 @@ class WalkForwardRequest(BaseModel):
     use_risk_agent: bool = True
     emergency_halt: bool = False
     max_trades_per_day: int = Field(default=5, ge=1)
+    force_close_at_end: bool = False
 
     @model_validator(mode="after")
     def validate_walk_forward_bars(self) -> "WalkForwardRequest":
@@ -205,6 +208,9 @@ class BacktestMetrics(BaseModel):
     profit_factor: Optional[float]
     expectancy: float
     max_drawdown: float
+    realized_net_profit: float = 0.0
+    unrealized_pnl: float = 0.0
+    open_position_count: int = 0
     risk_rejections: int = 0
     kill_switch_events: int = 0
 
@@ -212,6 +218,7 @@ class BacktestMetrics(BaseModel):
 class BacktestRunResult(BaseModel):
     strategy: str
     symbols: List[str]
+    execution_model: str = "next_bar_open"
     metrics: BacktestMetrics
     trades: List[SimulatedTrade]
     equity_curve: List[EquityPoint]

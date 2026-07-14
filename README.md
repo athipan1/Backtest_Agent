@@ -15,6 +15,7 @@ It replays historical OHLCV bars, generates strategy signals, simulates fee and 
 - Next-bar-open execution to prevent same-bar look-ahead
 - Gap-aware stop-loss and take-profit fills
 - Round-trip fee accounting with realized/unrealized P/L separation
+- Current-equity risk-based position sizing
 - Equity curve
 - Basic performance metrics
 
@@ -54,6 +55,38 @@ Set `force_close_at_end=true` to liquidate remaining positions at the final clos
 for closed-trade comparisons. Scheduled runs can set
 `BACKTEST_FORCE_CLOSE_AT_END=true`; this setting and the engine version are part
 of the deterministic run identity.
+
+## Position sizing
+
+Long entries are sized from current marked-to-market equity and the distance
+between entry and stop loss:
+
+```text
+risk budget      = current equity * risk_per_trade
+risk quantity    = risk budget / (entry price - stop loss)
+position quantity = minimum of risk quantity, position cap, and fee-aware cash quantity
+```
+
+This prevents a backtest from continuing to size every trade from the original
+starting balance after gains or losses. The local Risk_Agent-compatible adapter
+independently enforces the same risk budget and rejects invalid long protection
+prices.
+
+Scheduled runs can configure the policy with:
+
+```text
+BACKTEST_RISK_PER_TRADE
+BACKTEST_MAX_POSITION_PCT
+BACKTEST_STOP_LOSS_PCT
+BACKTEST_REWARD_RISK_RATIO
+BACKTEST_USE_RISK_AGENT
+BACKTEST_MAX_TRADES_PER_DAY
+BACKTEST_EMERGENCY_HALT
+```
+
+Risk and execution parameters are stored with Database_Agent evidence and are
+part of the deterministic run identity, so changing the risk policy produces a
+different run ID.
 
 ## Next phases
 

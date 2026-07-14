@@ -9,6 +9,7 @@ from app.engine import (
     _exit_position,
     _fee,
     _intrabar_exit_price,
+    _position_size,
     _sell_price,
     _stop_loss_price,
     _take_profit_price,
@@ -48,7 +49,8 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
     last_bars = {}
     entries_by_day: Dict[str, int] = {}
     for _, symbol, bar in timeline:
-        last_prices[symbol] = bar.close
+        # Size and risk-check entries using prices observable at the open.
+        last_prices[symbol] = bar.open
         last_bars[symbol] = bar
         position = positions[symbol]
         day_key = bar.timestamp.date().isoformat()
@@ -57,14 +59,23 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
         if pending_signal == "buy" and position.quantity <= 0:
             entry_price = _buy_price(bar.open, request.slippage_bps)
             stop_loss = _stop_loss_price(entry_price, request)
-            quantity = int((request.initial_equity * request.max_position_pct) / entry_price)
+            current_equity = _portfolio_value(cash, positions, last_prices)
+            quantity = _position_size(
+                cash=cash,
+                current_equity=current_equity,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                risk_per_trade=request.risk_per_trade,
+                max_position_pct=request.max_position_pct,
+                fee_bps=request.fee_bps,
+            )
             decision = risk_adapter.evaluate(
                 RiskCheckPayload(
                     symbol=symbol,
                     side="buy",
                     entry_price=entry_price,
                     protection_price=stop_loss,
-                    equity=request.initial_equity,
+                    equity=current_equity,
                     requested_quantity=quantity,
                     current_symbol_exposure=0.0,
                     current_total_exposure=_portfolio_value(0.0, positions, last_prices),
@@ -73,6 +84,7 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
                 ),
                 max_position_pct=request.max_position_pct,
                 max_trades_per_day=request.max_trades_per_day,
+                risk_per_trade=request.risk_per_trade,
             ) if request.use_risk_agent else None
 
             if decision is not None and not decision.approved:
@@ -138,6 +150,7 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
             request.slow_window,
         )
 
+        last_prices[symbol] = bar.close
         equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(_portfolio_value(cash, positions, last_prices), 2)))
 
     if request.force_close_at_end:

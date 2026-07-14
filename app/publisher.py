@@ -8,7 +8,7 @@ from app.database_client import DatabaseAgentClient
 from app.models import BacktestRunRequest, BacktestRunResult, SimulatedTrade
 
 
-ENGINE_VERSION = "backtest-agent-0.2.0"
+ENGINE_VERSION = "backtest-agent-0.3.0"
 
 
 def _iso(value: datetime) -> str:
@@ -124,6 +124,20 @@ def build_database_backtest_payload(
         "end_time": end_time,
         "status": "completed",
         "engine_version": ENGINE_VERSION,
+        "parameters": {
+            "strategy": result.strategy,
+            "fast_window": request.fast_window,
+            "slow_window": request.slow_window,
+            "risk_per_trade": request.risk_per_trade,
+            "max_position_pct": request.max_position_pct,
+            "stop_loss_pct": request.stop_loss_pct,
+            "reward_risk_ratio": request.reward_risk_ratio,
+            "fee_bps": request.fee_bps,
+            "slippage_bps": request.slippage_bps,
+            "use_risk_agent": request.use_risk_agent,
+            "max_trades_per_day": request.max_trades_per_day,
+            "force_close_at_end": request.force_close_at_end,
+        },
         "metrics": {
             "initial_equity": metrics.initial_equity,
             "final_equity": metrics.final_equity,
@@ -149,6 +163,7 @@ def build_database_backtest_payload(
             "symbols": result.symbols,
             "strategy": result.strategy,
             "execution_model": result.execution_model,
+            "position_sizing_model": result.position_sizing_model,
             "force_close_at_end": request.force_close_at_end,
             "warnings": result.warnings,
             **(metadata or {}),

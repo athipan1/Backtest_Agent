@@ -36,3 +36,61 @@ def test_local_risk_adapter_clips_to_position_cap():
     assert decision.approved is True
     assert decision.final_quantity == 100
     assert "quantity_clipped_to_position_cap" in decision.warnings
+
+
+def test_local_risk_adapter_clips_to_per_trade_risk_budget():
+    decision = LocalRiskAdapter().evaluate(
+        RiskCheckPayload(
+            symbol="AAPL",
+            side="buy",
+            entry_price=100,
+            protection_price=90,
+            equity=10000,
+            requested_quantity=500,
+        ),
+        max_position_pct=1.0,
+        max_trades_per_day=5,
+        risk_per_trade=0.01,
+    )
+
+    assert decision.approved is True
+    assert decision.final_quantity == 10
+    assert "quantity_clipped_to_risk_budget" in decision.warnings
+
+
+def test_local_risk_adapter_rejects_invalid_long_protection_price():
+    decision = LocalRiskAdapter().evaluate(
+        RiskCheckPayload(
+            symbol="AAPL",
+            side="buy",
+            entry_price=100,
+            protection_price=100,
+            equity=10000,
+            requested_quantity=10,
+        ),
+        max_position_pct=1.0,
+        max_trades_per_day=5,
+        risk_per_trade=0.01,
+    )
+
+    assert decision.approved is False
+    assert "invalid_protection_price" in decision.violations
+
+
+def test_local_risk_adapter_sizes_sell_risk_from_stop_above_entry():
+    decision = LocalRiskAdapter().evaluate(
+        RiskCheckPayload(
+            symbol="AAPL",
+            side="sell",
+            entry_price=100,
+            protection_price=110,
+            equity=10000,
+            requested_quantity=500,
+        ),
+        max_position_pct=1.0,
+        max_trades_per_day=5,
+        risk_per_trade=0.01,
+    )
+
+    assert decision.approved is True
+    assert decision.final_quantity == 10

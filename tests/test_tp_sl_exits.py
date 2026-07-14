@@ -59,16 +59,17 @@ def test_run_backtest_exits_open_position_on_take_profit_bar():
         request_with_bars([
             bar(0, open_price=100, high=100, low=99, close=100),
             bar(1, open_price=101, high=102, low=100, close=101),
-            # Breakout strategy buys at close 103. Stop = 99.91, TP = 109.18.
+            # The close creates the signal; the order fills at the next open.
             bar(2, open_price=102, high=104, low=101, close=103),
-            bar(3, open_price=104, high=110, low=103, close=109),
+            # Entry = 104, Stop = 100.88, TP = 110.24.
+            bar(3, open_price=104, high=111, low=103, close=109),
         ])
     )
 
     sell_trades = [trade for trade in result.trades if trade.side == "sell"]
     assert len(sell_trades) == 1
     assert sell_trades[0].reason == "take_profit"
-    assert sell_trades[0].price == 109.18
+    assert sell_trades[0].price == 110.24
     assert sell_trades[0].realized_pnl > 0
 
 
@@ -77,14 +78,27 @@ def test_run_backtest_exits_open_position_on_stop_loss_bar():
         request_with_bars([
             bar(0, open_price=100, high=100, low=99, close=100),
             bar(1, open_price=101, high=102, low=100, close=101),
-            # Breakout strategy buys at close 103. Stop = 99.91.
+            # The close creates the signal; the order fills at the next open.
             bar(2, open_price=102, high=104, low=101, close=103),
-            bar(3, open_price=101, high=102, low=99, close=100),
+            # Entry = 101, Stop = 97.97.
+            bar(3, open_price=101, high=102, low=97, close=100),
         ])
     )
 
     sell_trades = [trade for trade in result.trades if trade.side == "sell"]
     assert len(sell_trades) == 1
     assert sell_trades[0].reason == "stop_loss"
-    assert sell_trades[0].price == 99.91
+    assert sell_trades[0].price == 97.97
     assert sell_trades[0].realized_pnl < 0
+
+
+def test_stop_loss_uses_open_when_price_gaps_through_stop():
+    position = Position(quantity=10, average_price=100, stop_loss=97, take_profit=106)
+
+    exit_price, reason = _intrabar_exit_price(
+        position,
+        bar(1, open_price=95, high=96, low=94, close=95),
+    )
+
+    assert exit_price == 95
+    assert reason == "stop_loss"

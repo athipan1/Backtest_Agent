@@ -1,5 +1,7 @@
-from app.models import BacktestRunRequest
-from app.publisher import build_database_backtest_payload, publish_backtest_result
+from datetime import datetime, timezone
+
+from app.models import BacktestRunRequest, SimulatedTrade
+from app.publisher import _trade_pairs, build_database_backtest_payload, publish_backtest_result
 from app.risk_engine import run_backtest_with_risk
 
 
@@ -37,6 +39,34 @@ class FakeDatabaseClient:
         return {"status": "success", "data": {"run_id": payload["run_id"]}}
 
 
+def test_trade_pair_publishes_total_round_trip_fees():
+    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = _trade_pairs(
+        [
+            SimulatedTrade(
+                symbol="AAPL",
+                side="buy",
+                quantity=10,
+                price=100,
+                fees=1,
+                timestamp=timestamp,
+            ),
+            SimulatedTrade(
+                symbol="AAPL",
+                side="sell",
+                quantity=10,
+                price=110,
+                fees=1.1,
+                timestamp=timestamp,
+                realized_pnl=97.9,
+            ),
+        ]
+    )
+
+    assert rows[0]["fees"] == 2.1
+    assert rows[0]["realized_pl"] == 97.9
+
+
 def test_build_database_backtest_payload_shapes_result_for_database_agent():
     request = _request()
     result = run_backtest_with_risk(request)
@@ -60,6 +90,9 @@ def test_build_database_backtest_payload_shapes_result_for_database_agent():
     assert payload["status"] == "completed"
     assert payload["metrics"]["initial_equity"] == 100000
     assert "win_rate" in payload["metrics"]
+    assert "realized_net_profit" in payload["metrics"]
+    assert "unrealized_pnl" in payload["metrics"]
+    assert payload["metadata"]["execution_model"] == "next_bar_open"
     assert payload["equity_curve"]
     assert payload["metadata"]["source_agent"] == "backtest-agent"
     assert payload["metadata"]["test"] is True

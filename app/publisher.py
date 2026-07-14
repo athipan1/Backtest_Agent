@@ -8,7 +8,7 @@ from app.database_client import DatabaseAgentClient
 from app.models import BacktestRunRequest, BacktestRunResult, SimulatedTrade
 
 
-ENGINE_VERSION = "backtest-agent-0.1.0"
+ENGINE_VERSION = "backtest-agent-0.2.0"
 
 
 def _iso(value: datetime) -> str:
@@ -67,6 +67,7 @@ def _trade_pairs(trades: List[SimulatedTrade]) -> List[Dict[str, Any]]:
                 "entry_price": entry.price,
                 "exit_price": trade.price,
                 "realized_pl": trade.realized_pnl,
+                "fees": round(entry.fees + trade.fees, 2),
                 "outcome": _outcome(trade.realized_pnl),
                 "entry_time": _iso(entry.timestamp),
                 "exit_time": _iso(trade.timestamp),
@@ -132,6 +133,9 @@ def build_database_backtest_payload(
             "profit_factor": metrics.profit_factor,
             "expectancy": metrics.expectancy,
             "max_drawdown": metrics.max_drawdown,
+            "realized_net_profit": metrics.realized_net_profit,
+            "unrealized_pnl": metrics.unrealized_pnl,
+            "open_position_count": metrics.open_position_count,
             "total_trades": metrics.trade_count,
             "winning_trades": metrics.winning_trades,
             "losing_trades": metrics.losing_trades,
@@ -144,6 +148,8 @@ def build_database_backtest_payload(
             "source_agent": "backtest-agent",
             "symbols": result.symbols,
             "strategy": result.strategy,
+            "execution_model": result.execution_model,
+            "force_close_at_end": request.force_close_at_end,
             "warnings": result.warnings,
             **(metadata or {}),
         },

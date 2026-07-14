@@ -33,6 +33,7 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
     risk_rejections: List[RiskRejection] = []
     warnings: List[str] = []
     risk_adapter = LocalRiskAdapter()
+    pending_signals: Dict[str, str] = {symbol.upper(): "hold" for symbol in request.symbols}
 
     timeline = []
     for symbol in [item.upper() for item in request.symbols]:
@@ -44,30 +45,17 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
     timeline.sort(key=lambda item: item[0])
 
     last_prices: Dict[str, float] = {}
+    last_bars = {}
     entries_by_day: Dict[str, int] = {}
     for _, symbol, bar in timeline:
         last_prices[symbol] = bar.close
-        closes[symbol].append(bar.close)
-        history[symbol].append(bar)
-        signal = strategy_signal(request.strategy, closes[symbol], history[symbol], request.fast_window, request.slow_window)
+        last_bars[symbol] = bar
         position = positions[symbol]
         day_key = bar.timestamp.date().isoformat()
 
-        exit_price, exit_reason = _intrabar_exit_price(position, bar)
-        if exit_price is not None and exit_reason is not None:
-            cash = _exit_position(
-                symbol=symbol,
-                position=position,
-                cash=cash,
-                exit_price=exit_price,
-                timestamp=bar.timestamp,
-                reason=exit_reason,
-                fee_bps=request.fee_bps,
-                trades=trades,
-            )
-
-        if signal == "buy" and position.quantity <= 0:
-            entry_price = _buy_price(bar.close, request.slippage_bps)
+        pending_signal = pending_signals[symbol]
+        if pending_signal == "buy" and position.quantity <= 0:
+            entry_price = _buy_price(bar.open, request.slippage_bps)
             stop_loss = _stop_loss_price(entry_price, request)
             quantity = int((request.initial_equity * request.max_position_pct) / entry_price)
             decision = risk_adapter.evaluate(
@@ -109,12 +97,13 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
                     entries_by_day[day_key] = entries_by_day.get(day_key, 0) + 1
                     position.quantity = float(quantity)
                     position.average_price = entry_price
+                    position.entry_fees = fees
                     position.stop_loss = stop_loss
                     position.take_profit = _take_profit_price(entry_price, stop_loss, request)
                     trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(entry_price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
 
-        if signal == "sell" and position.quantity > 0:
-            exit_price = _sell_price(bar.close, request.slippage_bps)
+        if pending_signal == "sell" and position.quantity > 0:
+            exit_price = _sell_price(bar.open, request.slippage_bps)
             cash = _exit_position(
                 symbol=symbol,
                 position=position,
@@ -126,10 +115,63 @@ def run_backtest_with_risk(request: BacktestRunRequest) -> BacktestRunResult:
                 trades=trades,
             )
 
+        exit_price, exit_reason = _intrabar_exit_price(position, bar)
+        if exit_price is not None and exit_reason is not None:
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=_sell_price(exit_price, request.slippage_bps),
+                timestamp=bar.timestamp,
+                reason=exit_reason,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+
+        closes[symbol].append(bar.close)
+        history[symbol].append(bar)
+        pending_signals[symbol] = strategy_signal(
+            request.strategy,
+            closes[symbol],
+            history[symbol],
+            request.fast_window,
+            request.slow_window,
+        )
+
         equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(_portfolio_value(cash, positions, last_prices), 2)))
 
+    if request.force_close_at_end:
+        for symbol, position in positions.items():
+            if position.quantity <= 0 or symbol not in last_bars:
+                continue
+            last_bar = last_bars[symbol]
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=_sell_price(last_bar.close, request.slippage_bps),
+                timestamp=last_bar.timestamp,
+                reason="end_of_data",
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+        if last_bars:
+            equity_curve.append(
+                EquityPoint(
+                    timestamp=max(bar.timestamp for bar in last_bars.values()),
+                    equity=round(cash, 2),
+                )
+            )
+
     final_equity = equity_curve[-1].equity if equity_curve else cash
-    metrics = _trade_metrics(request.initial_equity, final_equity, trades, equity_curve)
+    metrics = _trade_metrics(
+        request.initial_equity,
+        final_equity,
+        trades,
+        equity_curve,
+        positions=positions,
+        last_prices=last_prices,
+    )
     metrics.risk_rejections = len(risk_rejections)
     metrics.kill_switch_events = sum(1 for item in risk_rejections if item.kill_switch_active)
     return BacktestRunResult(

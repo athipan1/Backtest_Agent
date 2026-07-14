@@ -11,12 +11,14 @@ from app.strategies import strategy_signal
 class Position:
     quantity: float = 0.0
     average_price: float = 0.0
+    entry_fees: float = 0.0
     stop_loss: float | None = None
     take_profit: float | None = None
 
     def reset(self) -> None:
         self.quantity = 0.0
         self.average_price = 0.0
+        self.entry_fees = 0.0
         self.stop_loss = None
         self.take_profit = None
 
@@ -73,7 +75,11 @@ def _exit_position(
 ) -> float:
     proceeds = exit_price * position.quantity
     fees = _fee(proceeds, fee_bps)
-    realized_pnl = (exit_price - position.average_price) * position.quantity - fees
+    realized_pnl = (
+        (exit_price - position.average_price) * position.quantity
+        - position.entry_fees
+        - fees
+    )
     cash += proceeds - fees
     trades.append(
         SimulatedTrade(
@@ -105,13 +111,25 @@ def _intrabar_exit_price(position: Position, bar: PriceBar) -> tuple[float | Non
     take_profit_hit = position.take_profit is not None and bar.high >= position.take_profit
 
     if stop_hit:
-        return position.stop_loss, "stop_loss"
+        # A sell stop becomes a market order. If price gaps through it, the
+        # opening price is the first executable reference rather than the more
+        # favorable stop price.
+        return min(position.stop_loss, bar.open), "stop_loss"
     if take_profit_hit:
-        return position.take_profit, "take_profit"
+        # A take-profit limit may receive price improvement on a favorable gap.
+        return max(position.take_profit, bar.open), "take_profit"
     return None, None
 
 
-def _trade_metrics(initial_equity: float, final_equity: float, trades: List[SimulatedTrade], curve: List[EquityPoint]) -> BacktestMetrics:
+def _trade_metrics(
+    initial_equity: float,
+    final_equity: float,
+    trades: List[SimulatedTrade],
+    curve: List[EquityPoint],
+    *,
+    positions: Dict[str, Position] | None = None,
+    last_prices: Dict[str, float] | None = None,
+) -> BacktestMetrics:
     realized = [trade.realized_pnl for trade in trades if trade.side == "sell"]
     winners = [pnl for pnl in realized if pnl > 0]
     losers = [pnl for pnl in realized if pnl < 0]
@@ -119,6 +137,19 @@ def _trade_metrics(initial_equity: float, final_equity: float, trades: List[Simu
     gross_loss = round(sum(losers), 2)
     trade_count = len(realized)
     net_profit = round(final_equity - initial_equity, 2)
+    open_positions = positions or {}
+    marks = last_prices or {}
+    unrealized_pnl = round(
+        sum(
+            (marks.get(symbol, position.average_price) - position.average_price)
+            * position.quantity
+            - position.entry_fees
+            for symbol, position in open_positions.items()
+            if position.quantity > 0
+        ),
+        2,
+    )
+    realized_net_profit = round(sum(realized), 2)
     if gross_loss == 0:
         profit_factor = None if gross_profit > 0 else 0.0
     else:
@@ -137,6 +168,9 @@ def _trade_metrics(initial_equity: float, final_equity: float, trades: List[Simu
         profit_factor=profit_factor,
         expectancy=round(0.0 if trade_count == 0 else sum(realized) / trade_count, 2),
         max_drawdown=max_drawdown(curve),
+        realized_net_profit=realized_net_profit,
+        unrealized_pnl=unrealized_pnl,
+        open_position_count=sum(1 for position in open_positions.values() if position.quantity > 0),
     )
 
 
@@ -155,6 +189,7 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
     trades: List[SimulatedTrade] = []
     equity_curve: List[EquityPoint] = []
     warnings: List[str] = []
+    pending_signals: Dict[str, str] = {symbol.upper(): "hold" for symbol in request.symbols}
 
     timeline = []
     bars_by_symbol = {symbol.upper(): _bars_for_symbol(request, symbol) for symbol in request.symbols}
@@ -166,29 +201,19 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
     timeline.sort(key=lambda row: row[0])
 
     last_prices: Dict[str, float] = {}
+    last_bars: Dict[str, PriceBar] = {}
     for _, symbol, bar in timeline:
         last_prices[symbol] = bar.close
-        closes[symbol].append(bar.close)
-        history[symbol].append(bar)
-        signal = strategy_signal(request.strategy, closes[symbol], history[symbol], request.fast_window, request.slow_window)
+        last_bars[symbol] = bar
         position = positions[symbol]
 
-        exit_price, exit_reason = _intrabar_exit_price(position, bar)
-        if exit_price is not None and exit_reason is not None:
-            cash = _exit_position(
-                symbol=symbol,
-                position=position,
-                cash=cash,
-                exit_price=exit_price,
-                timestamp=bar.timestamp,
-                reason=exit_reason,
-                fee_bps=request.fee_bps,
-                trades=trades,
-            )
-
-        if signal == "buy" and position.quantity <= 0:
+        # Signals are calculated after a bar closes and may only execute on the
+        # next bar. This prevents using a close that was not yet observable to
+        # fill an order at that same close.
+        pending_signal = pending_signals[symbol]
+        if pending_signal == "buy" and position.quantity <= 0:
             max_position_value = request.initial_equity * request.max_position_pct
-            price = _buy_price(bar.close, request.slippage_bps)
+            price = _buy_price(bar.open, request.slippage_bps)
             quantity = int(max_position_value / price)
             cost = price * quantity
             fees = _fee(cost, request.fee_bps)
@@ -197,12 +222,13 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
                 stop_loss = _stop_loss_price(price, request)
                 position.quantity = float(quantity)
                 position.average_price = price
+                position.entry_fees = fees
                 position.stop_loss = stop_loss
                 position.take_profit = _take_profit_price(price, stop_loss, request)
                 trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
 
-        if signal == "sell" and position.quantity > 0:
-            price = _sell_price(bar.close, request.slippage_bps)
+        if pending_signal == "sell" and position.quantity > 0:
+            price = _sell_price(bar.open, request.slippage_bps)
             cash = _exit_position(
                 symbol=symbol,
                 position=position,
@@ -214,11 +240,66 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
                 trades=trades,
             )
 
+        # A new position entered at the open is protected during the remainder
+        # of the bar. Existing positions that already exited remain reset.
+        exit_price, exit_reason = _intrabar_exit_price(position, bar)
+        if exit_price is not None and exit_reason is not None:
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=_sell_price(exit_price, request.slippage_bps),
+                timestamp=bar.timestamp,
+                reason=exit_reason,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+
+        closes[symbol].append(bar.close)
+        history[symbol].append(bar)
+        pending_signals[symbol] = strategy_signal(
+            request.strategy,
+            closes[symbol],
+            history[symbol],
+            request.fast_window,
+            request.slow_window,
+        )
+
         equity = cash + sum(pos.quantity * last_prices.get(sym, pos.average_price) for sym, pos in positions.items())
         equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(equity, 2)))
 
+    if request.force_close_at_end:
+        for symbol, position in positions.items():
+            if position.quantity <= 0 or symbol not in last_bars:
+                continue
+            last_bar = last_bars[symbol]
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=_sell_price(last_bar.close, request.slippage_bps),
+                timestamp=last_bar.timestamp,
+                reason="end_of_data",
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+        if last_bars:
+            equity_curve.append(
+                EquityPoint(
+                    timestamp=max(bar.timestamp for bar in last_bars.values()),
+                    equity=round(cash, 2),
+                )
+            )
+
     final_equity = equity_curve[-1].equity if equity_curve else cash
-    metrics = _trade_metrics(request.initial_equity, final_equity, trades, equity_curve)
+    metrics = _trade_metrics(
+        request.initial_equity,
+        final_equity,
+        trades,
+        equity_curve,
+        positions=positions,
+        last_prices=last_prices,
+    )
     return BacktestRunResult(
         strategy=request.strategy,
         symbols=[symbol.upper() for symbol in request.symbols],

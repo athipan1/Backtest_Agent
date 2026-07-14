@@ -32,6 +32,7 @@ def compare_strategies(request: BacktestCompareRequest) -> BacktestCompareResult
             use_risk_agent=request.use_risk_agent,
             emergency_halt=request.emergency_halt,
             max_trades_per_day=request.max_trades_per_day,
+            force_close_at_end=request.force_close_at_end,
         )
         result = run_backtest_with_risk(run_request)
         metrics = result.metrics

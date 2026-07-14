@@ -53,3 +53,24 @@ def test_risk_aware_backtest_can_be_run_without_risk_adapter():
 
     assert result.metrics.risk_rejections == 0
     assert len(result.trades) >= 2
+
+
+def test_risk_aware_backtest_executes_close_signal_at_next_open():
+    rows = [
+        {"timestamp": "2026-01-01T00:00:00Z", "open": 100, "high": 100, "low": 99, "close": 100, "volume": 1000},
+        {"timestamp": "2026-01-02T00:00:00Z", "open": 101, "high": 102, "low": 100, "close": 101, "volume": 1000},
+        {"timestamp": "2026-01-03T00:00:00Z", "open": 102, "high": 104, "low": 101, "close": 103, "volume": 1000},
+        {"timestamp": "2026-01-04T00:00:00Z", "open": 120, "high": 122, "low": 119, "close": 121, "volume": 1000},
+    ]
+    result = run_backtest_with_risk(
+        base_request(
+            strategy="breakout",
+            fast_window=1,
+            slow_window=2,
+            bars={"AAPL": rows},
+        )
+    )
+
+    buy = next(trade for trade in result.trades if trade.side == "buy")
+    assert buy.price == 120
+    assert buy.timestamp.isoformat() == "2026-01-04T00:00:00+00:00"

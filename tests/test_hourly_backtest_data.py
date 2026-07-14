@@ -59,6 +59,13 @@ def test_hourly_run_identity_changes_when_risk_policy_changes(monkeypatch):
     assert conservative["risk_per_trade"] == 0.01
     assert aggressive["risk_per_trade"] == 0.02
 
+    monkeypatch.setenv("BACKTEST_RISK_PER_TRADE", "0.01")
+    monkeypatch.setenv("BACKTEST_MAX_TOTAL_EXPOSURE_PCT", "0.50")
+    exposure_limited = _load_payload(provider=FakeProvider())
+
+    assert conservative["run_id"] != exposure_limited["run_id"]
+    assert exposure_limited["max_total_exposure_pct"] == 0.50
+
 
 def test_hourly_payload_fetches_deduplicated_batch_symbols(monkeypatch):
     monkeypatch.setenv("BACKTEST_SYMBOLS", "aapl, MSFT,AAPL")

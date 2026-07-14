@@ -31,6 +31,10 @@ def _candidate_to_run_request(request: WalkForwardRequest, bars: Dict[str, List[
         emergency_halt=request.emergency_halt,
         max_trades_per_day=request.max_trades_per_day,
         force_close_at_end=request.force_close_at_end,
+        max_total_exposure_pct=request.max_total_exposure_pct,
+        max_open_positions=request.max_open_positions,
+        cash_reserve_pct=request.cash_reserve_pct,
+        max_new_positions_per_bar=request.max_new_positions_per_bar,
     )
 
 
@@ -79,6 +83,10 @@ def run_walk_forward_validation(request: WalkForwardRequest) -> WalkForwardResul
             emergency_halt=request.emergency_halt,
             max_trades_per_day=request.max_trades_per_day,
             force_close_at_end=request.force_close_at_end,
+            max_total_exposure_pct=request.max_total_exposure_pct,
+            max_open_positions=request.max_open_positions,
+            cash_reserve_pct=request.cash_reserve_pct,
+            max_new_positions_per_bar=request.max_new_positions_per_bar,
         )
     )
 

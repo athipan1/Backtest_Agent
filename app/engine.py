@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from app.models import BacktestMetrics, BacktestRunRequest, BacktestRunResult, EquityPoint, PriceBar, SimulatedTrade
+from app.models import (
+    AllocationRejection,
+    BacktestMetrics,
+    BacktestRunRequest,
+    BacktestRunResult,
+    EquityPoint,
+    PriceBar,
+    RiskCheckPayload,
+    RiskRejection,
+    SimulatedTrade,
+)
 from app.strategies import strategy_signal
 
 
@@ -210,106 +220,330 @@ def _bars_for_symbol(request: BacktestRunRequest, symbol: str) -> List[PriceBar]
     return []
 
 
-def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
+def _portfolio_value(
+    cash: float,
+    positions: Dict[str, Position],
+    prices: Dict[str, float],
+) -> float:
+    return cash + sum(
+        position.quantity * prices.get(symbol, position.average_price)
+        for symbol, position in positions.items()
+    )
+
+
+def _invested_value(
+    positions: Dict[str, Position],
+    prices: Dict[str, float],
+) -> float:
+    return sum(
+        position.quantity * prices.get(symbol, position.average_price)
+        for symbol, position in positions.items()
+    )
+
+
+def _bars_grouped_by_timestamp(
+    request: BacktestRunRequest,
+) -> List[tuple[Any, Dict[str, PriceBar]]]:
+    groups: Dict[Any, Dict[str, PriceBar]] = {}
+    for symbol in [item.upper() for item in request.symbols]:
+        for bar in _bars_for_symbol(request, symbol):
+            groups.setdefault(bar.timestamp, {})[symbol] = bar
+    return [(timestamp, groups[timestamp]) for timestamp in sorted(groups)]
+
+
+def _gap_exit_price(
+    position: Position,
+    bar: PriceBar,
+) -> tuple[float | None, str | None]:
+    if position.quantity <= 0:
+        return None, None
+    if position.stop_loss is not None and bar.open <= position.stop_loss:
+        return bar.open, "stop_loss"
+    if position.take_profit is not None and bar.open >= position.take_profit:
+        return bar.open, "take_profit"
+    return None, None
+
+
+def _allocation_rejection_reason(
+    *,
+    open_positions: int,
+    new_positions: int,
+    remaining_exposure: float,
+    remaining_cash: float,
+    entry_price: float,
+    request: BacktestRunRequest,
+) -> str:
+    if open_positions >= request.max_open_positions:
+        return "max_open_positions"
+    if new_positions >= request.max_new_positions_per_bar:
+        return "max_new_positions_per_bar"
+    if remaining_exposure < entry_price:
+        return "portfolio_exposure_limit"
+    if remaining_cash < entry_price * (1.0 + request.fee_bps / 10000.0):
+        return "cash_reserve_limit"
+    return "position_size_below_one_share"
+
+
+def _run_backtest(
+    request: BacktestRunRequest,
+    *,
+    risk_adapter=None,
+) -> BacktestRunResult:
     cash = float(request.initial_equity)
     positions: Dict[str, Position] = {symbol.upper(): Position() for symbol in request.symbols}
     closes: Dict[str, List[float]] = {symbol.upper(): [] for symbol in request.symbols}
     history: Dict[str, List[PriceBar]] = {symbol.upper(): [] for symbol in request.symbols}
     trades: List[SimulatedTrade] = []
     equity_curve: List[EquityPoint] = []
+    risk_rejections: List[RiskRejection] = []
+    allocation_rejections: List[AllocationRejection] = []
     warnings: List[str] = []
     pending_signals: Dict[str, str] = {symbol.upper(): "hold" for symbol in request.symbols}
 
-    timeline = []
     bars_by_symbol = {symbol.upper(): _bars_for_symbol(request, symbol) for symbol in request.symbols}
     for symbol, bars in bars_by_symbol.items():
         if len(bars) < request.slow_window:
             warnings.append(f"{symbol} has fewer bars than slow_window")
-        for bar in bars:
-            timeline.append((bar.timestamp, symbol, bar))
-    timeline.sort(key=lambda row: row[0])
 
     last_prices: Dict[str, float] = {}
     last_bars: Dict[str, PriceBar] = {}
-    for _, symbol, bar in timeline:
-        # Orders execute at the open, so current equity must be marked with
-        # information available at that time rather than the future close.
-        last_prices[symbol] = bar.open
-        last_bars[symbol] = bar
-        position = positions[symbol]
+    entries_by_day: Dict[str, int] = {}
+    for timestamp, bars_at_timestamp in _bars_grouped_by_timestamp(request):
+        symbols = sorted(bars_at_timestamp)
+        exited_at_open: set[str] = set()
 
-        # Signals are calculated after a bar closes and may only execute on the
-        # next bar. This prevents using a close that was not yet observable to
-        # fill an order at that same close.
-        pending_signal = pending_signals[symbol]
-        if pending_signal == "buy" and position.quantity <= 0:
-            price = _buy_price(bar.open, request.slippage_bps)
-            stop_loss = _stop_loss_price(price, request)
-            current_equity = cash + sum(
-                pos.quantity * last_prices.get(sym, pos.average_price)
-                for sym, pos in positions.items()
-            )
-            quantity = _position_size(
-                cash=cash,
-                current_equity=current_equity,
-                entry_price=price,
-                stop_loss=stop_loss,
-                risk_per_trade=request.risk_per_trade,
-                max_position_pct=request.max_position_pct,
-                fee_bps=request.fee_bps,
-            )
-            cost = price * quantity
-            fees = _fee(cost, request.fee_bps)
-            if quantity > 0 and cash >= cost + fees:
-                cash -= cost + fees
-                position.quantity = float(quantity)
-                position.average_price = price
-                position.entry_fees = fees
-                position.stop_loss = stop_loss
-                position.take_profit = _take_profit_price(price, stop_loss, request)
-                trades.append(SimulatedTrade(symbol=symbol, side="buy", quantity=quantity, price=round(price, 4), fees=round(fees, 2), timestamp=bar.timestamp, reason=request.strategy))
+        # Every symbol in the batch sees the same timestamp-level open snapshot.
+        for symbol in symbols:
+            bar = bars_at_timestamp[symbol]
+            last_prices[symbol] = bar.open
+            last_bars[symbol] = bar
 
-        if pending_signal == "sell" and position.quantity > 0:
-            price = _sell_price(bar.open, request.slippage_bps)
-            cash = _exit_position(
-                symbol=symbol,
-                position=position,
-                cash=cash,
-                exit_price=price,
-                timestamp=bar.timestamp,
-                reason=request.strategy,
-                fee_bps=request.fee_bps,
-                trades=trades,
-            )
-
-        # A new position entered at the open is protected during the remainder
-        # of the bar. Existing positions that already exited remain reset.
-        exit_price, exit_reason = _intrabar_exit_price(position, bar)
-        if exit_price is not None and exit_reason is not None:
+        # Broker-side protection that gaps through its trigger executes first.
+        for symbol in symbols:
+            bar = bars_at_timestamp[symbol]
+            position = positions[symbol]
+            exit_price, exit_reason = _gap_exit_price(position, bar)
+            if exit_price is None or exit_reason is None:
+                continue
             cash = _exit_position(
                 symbol=symbol,
                 position=position,
                 cash=cash,
                 exit_price=_sell_price(exit_price, request.slippage_bps),
-                timestamp=bar.timestamp,
+                timestamp=timestamp,
+                reason=exit_reason,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+            exited_at_open.add(symbol)
+
+        # Pending close-generated sell signals also execute at this open.
+        for symbol in symbols:
+            position = positions[symbol]
+            if pending_signals[symbol] != "sell" or position.quantity <= 0:
+                continue
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=_sell_price(
+                    bars_at_timestamp[symbol].open,
+                    request.slippage_bps,
+                ),
+                timestamp=timestamp,
+                reason=request.strategy,
+                fee_bps=request.fee_bps,
+                trades=trades,
+            )
+            exited_at_open.add(symbol)
+
+        portfolio_equity = _portfolio_value(cash, positions, last_prices)
+        reserve_value = portfolio_equity * request.cash_reserve_pct
+        max_exposure_value = portfolio_equity * request.max_total_exposure_pct
+        candidates: List[tuple[str, float, float, int]] = []
+
+        for symbol in symbols:
+            if (
+                pending_signals[symbol] != "buy"
+                or positions[symbol].quantity > 0
+                or symbol in exited_at_open
+            ):
+                continue
+            entry_price = _buy_price(
+                bars_at_timestamp[symbol].open,
+                request.slippage_bps,
+            )
+            stop_loss = _stop_loss_price(entry_price, request)
+            requested_quantity = _position_size(
+                cash=max(0.0, cash - reserve_value),
+                current_equity=portfolio_equity,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                risk_per_trade=request.risk_per_trade,
+                max_position_pct=request.max_position_pct,
+                fee_bps=request.fee_bps,
+            )
+            candidates.append(
+                (symbol, entry_price, stop_loss, requested_quantity)
+            )
+
+        # The stable symbol order makes allocation independent of request order.
+        candidates.sort(key=lambda item: item[0])
+        new_positions = 0
+        for symbol, entry_price, stop_loss, requested_quantity in candidates:
+            open_positions = sum(
+                1 for position in positions.values() if position.quantity > 0
+            )
+            remaining_exposure = max(
+                0.0,
+                max_exposure_value - _invested_value(positions, last_prices),
+            )
+            remaining_cash = max(0.0, cash - reserve_value)
+            quantity_by_exposure = int(remaining_exposure / entry_price)
+            quantity_by_cash = int(
+                remaining_cash
+                / (entry_price * (1.0 + request.fee_bps / 10000.0))
+            )
+            approved_quantity = min(
+                requested_quantity,
+                quantity_by_exposure,
+                quantity_by_cash,
+            )
+
+            limit_hit = (
+                open_positions >= request.max_open_positions
+                or new_positions >= request.max_new_positions_per_bar
+            )
+            if limit_hit or approved_quantity <= 0:
+                allocation_rejections.append(
+                    AllocationRejection(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        requested_quantity=requested_quantity,
+                        reason=_allocation_rejection_reason(
+                            open_positions=open_positions,
+                            new_positions=new_positions,
+                            remaining_exposure=remaining_exposure,
+                            remaining_cash=remaining_cash,
+                            entry_price=entry_price,
+                            request=request,
+                        ),
+                    )
+                )
+                continue
+
+            day_key = timestamp.date().isoformat()
+            if risk_adapter is not None:
+                decision = risk_adapter.evaluate(
+                    RiskCheckPayload(
+                        symbol=symbol,
+                        side="buy",
+                        entry_price=entry_price,
+                        protection_price=stop_loss,
+                        equity=portfolio_equity,
+                        requested_quantity=approved_quantity,
+                        current_symbol_exposure=0.0,
+                        current_total_exposure=_invested_value(
+                            positions,
+                            last_prices,
+                        ),
+                        trades_today=entries_by_day.get(day_key, 0),
+                        emergency_halt=request.emergency_halt,
+                    ),
+                    max_position_pct=request.max_position_pct,
+                    max_trades_per_day=request.max_trades_per_day,
+                    risk_per_trade=request.risk_per_trade,
+                )
+                if not decision.approved:
+                    risk_rejections.append(
+                        RiskRejection(
+                            symbol=symbol,
+                            timestamp=timestamp,
+                            side="buy",
+                            requested_quantity=approved_quantity,
+                            violations=decision.violations,
+                            kill_switch_active=decision.kill_switch_active,
+                            source=decision.source,
+                        )
+                    )
+                    continue
+                approved_quantity = int(decision.final_quantity)
+
+            cost = entry_price * approved_quantity
+            fees = _fee(cost, request.fee_bps)
+            if approved_quantity <= 0 or cash < cost + fees:
+                allocation_rejections.append(
+                    AllocationRejection(
+                        symbol=symbol,
+                        timestamp=timestamp,
+                        requested_quantity=requested_quantity,
+                        reason="insufficient_cash",
+                    )
+                )
+                continue
+
+            cash -= cost + fees
+            entries_by_day[day_key] = entries_by_day.get(day_key, 0) + 1
+            new_positions += 1
+            position = positions[symbol]
+            position.quantity = float(approved_quantity)
+            position.average_price = entry_price
+            position.entry_fees = fees
+            position.stop_loss = stop_loss
+            position.take_profit = _take_profit_price(
+                entry_price,
+                stop_loss,
+                request,
+            )
+            trades.append(
+                SimulatedTrade(
+                    symbol=symbol,
+                    side="buy",
+                    quantity=approved_quantity,
+                    price=round(entry_price, 4),
+                    fees=round(fees, 2),
+                    timestamp=timestamp,
+                    reason=request.strategy,
+                )
+            )
+
+        # Intrabar protection is evaluated after all open-time allocations.
+        for symbol in symbols:
+            bar = bars_at_timestamp[symbol]
+            position = positions[symbol]
+            exit_price, exit_reason = _intrabar_exit_price(position, bar)
+            if exit_price is None or exit_reason is None:
+                continue
+            cash = _exit_position(
+                symbol=symbol,
+                position=position,
+                cash=cash,
+                exit_price=_sell_price(exit_price, request.slippage_bps),
+                timestamp=timestamp,
                 reason=exit_reason,
                 fee_bps=request.fee_bps,
                 trades=trades,
             )
 
-        closes[symbol].append(bar.close)
-        history[symbol].append(bar)
-        pending_signals[symbol] = strategy_signal(
-            request.strategy,
-            closes[symbol],
-            history[symbol],
-            request.fast_window,
-            request.slow_window,
-        )
+        for symbol in symbols:
+            bar = bars_at_timestamp[symbol]
+            closes[symbol].append(bar.close)
+            history[symbol].append(bar)
+            pending_signals[symbol] = strategy_signal(
+                request.strategy,
+                closes[symbol],
+                history[symbol],
+                request.fast_window,
+                request.slow_window,
+            )
+            last_prices[symbol] = bar.close
 
-        last_prices[symbol] = bar.close
-        equity = cash + sum(pos.quantity * last_prices.get(sym, pos.average_price) for sym, pos in positions.items())
-        equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(equity, 2)))
+        equity_curve.append(
+            EquityPoint(
+                timestamp=timestamp,
+                equity=round(_portfolio_value(cash, positions, last_prices), 2),
+            )
+        )
 
     if request.force_close_at_end:
         for symbol, position in positions.items():
@@ -327,12 +561,15 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
                 trades=trades,
             )
         if last_bars:
-            equity_curve.append(
-                EquityPoint(
-                    timestamp=max(bar.timestamp for bar in last_bars.values()),
-                    equity=round(cash, 2),
-                )
+            final_timestamp = max(bar.timestamp for bar in last_bars.values())
+            final_point = EquityPoint(
+                timestamp=final_timestamp,
+                equity=round(cash, 2),
             )
+            if equity_curve and equity_curve[-1].timestamp == final_timestamp:
+                equity_curve[-1] = final_point
+            else:
+                equity_curve.append(final_point)
 
     final_equity = equity_curve[-1].equity if equity_curve else cash
     metrics = _trade_metrics(
@@ -343,11 +580,22 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
         positions=positions,
         last_prices=last_prices,
     )
+    metrics.risk_rejections = len(risk_rejections)
+    metrics.kill_switch_events = sum(
+        1 for item in risk_rejections if item.kill_switch_active
+    )
+    metrics.allocation_rejections = len(allocation_rejections)
     return BacktestRunResult(
         strategy=request.strategy,
         symbols=[symbol.upper() for symbol in request.symbols],
         metrics=metrics,
         trades=trades,
         equity_curve=equity_curve,
+        risk_rejections=risk_rejections,
+        allocation_rejections=allocation_rejections,
         warnings=warnings,
     )
+
+
+def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
+    return _run_backtest(request)

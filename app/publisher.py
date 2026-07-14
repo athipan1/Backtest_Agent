@@ -8,7 +8,7 @@ from app.database_client import DatabaseAgentClient
 from app.models import BacktestRunRequest, BacktestRunResult, SimulatedTrade
 
 
-ENGINE_VERSION = "backtest-agent-0.3.0"
+ENGINE_VERSION = "backtest-agent-0.4.0"
 
 
 def _iso(value: datetime) -> str:
@@ -137,6 +137,10 @@ def build_database_backtest_payload(
             "use_risk_agent": request.use_risk_agent,
             "max_trades_per_day": request.max_trades_per_day,
             "force_close_at_end": request.force_close_at_end,
+            "max_total_exposure_pct": request.max_total_exposure_pct,
+            "max_open_positions": request.max_open_positions,
+            "cash_reserve_pct": request.cash_reserve_pct,
+            "max_new_positions_per_bar": request.max_new_positions_per_bar,
         },
         "metrics": {
             "initial_equity": metrics.initial_equity,
@@ -150,6 +154,7 @@ def build_database_backtest_payload(
             "realized_net_profit": metrics.realized_net_profit,
             "unrealized_pnl": metrics.unrealized_pnl,
             "open_position_count": metrics.open_position_count,
+            "allocation_rejections": metrics.allocation_rejections,
             "total_trades": metrics.trade_count,
             "winning_trades": metrics.winning_trades,
             "losing_trades": metrics.losing_trades,
@@ -164,6 +169,11 @@ def build_database_backtest_payload(
             "strategy": result.strategy,
             "execution_model": result.execution_model,
             "position_sizing_model": result.position_sizing_model,
+            "allocation_policy": result.allocation_policy,
+            "allocation_rejections": [
+                item.model_dump(mode="json")
+                for item in result.allocation_rejections
+            ],
             "force_close_at_end": request.force_close_at_end,
             "warnings": result.warnings,
             **(metadata or {}),

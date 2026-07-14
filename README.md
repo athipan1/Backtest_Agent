@@ -16,6 +16,7 @@ It replays historical OHLCV bars, generates strategy signals, simulates fee and 
 - Gap-aware stop-loss and take-profit fills
 - Round-trip fee accounting with realized/unrealized P/L separation
 - Current-equity risk-based position sizing
+- Synchronous multi-symbol portfolio allocation
 - Equity curve
 - Basic performance metrics
 
@@ -87,6 +88,39 @@ BACKTEST_EMERGENCY_HALT
 Risk and execution parameters are stored with Database_Agent evidence and are
 part of the deterministic run identity, so changing the risk policy produces a
 different run ID.
+
+## Synchronous portfolio allocation
+
+Bars that share a timestamp are processed as one portfolio batch. The engine
+marks every available symbol at the open, handles gap exits and pending sells,
+then ranks new buy candidates by a stable uppercase symbol key before allocating
+capital. Changing request order from `AAPL,MSFT` to `MSFT,AAPL` therefore cannot
+change which candidate receives capital first.
+
+New entries are constrained by:
+
+- `max_total_exposure_pct`
+- `max_open_positions`
+- `cash_reserve_pct`
+- `max_new_positions_per_bar`
+
+Candidates that cannot receive at least one share are returned in
+`allocation_rejections` with a deterministic reason such as
+`max_open_positions`, `portfolio_exposure_limit`, or `cash_reserve_limit`.
+The equity curve contains one point per timestamp rather than one point per
+symbol event.
+
+Scheduled runs can configure these controls with:
+
+```text
+BACKTEST_MAX_TOTAL_EXPOSURE_PCT
+BACKTEST_MAX_OPEN_POSITIONS
+BACKTEST_CASH_RESERVE_PCT
+BACKTEST_MAX_NEW_POSITIONS_PER_BAR
+```
+
+Portfolio policy is persisted with Database_Agent evidence and included in the
+deterministic run identity.
 
 ## Next phases
 

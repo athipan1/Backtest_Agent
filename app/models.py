@@ -57,6 +57,10 @@ class BacktestRunRequest(BaseModel):
     emergency_halt: bool = False
     max_trades_per_day: int = Field(default=5, ge=1)
     force_close_at_end: bool = False
+    max_total_exposure_pct: float = Field(default=1.0, gt=0, le=1)
+    max_open_positions: int = Field(default=25, ge=1)
+    cash_reserve_pct: float = Field(default=0.0, ge=0, lt=1)
+    max_new_positions_per_bar: int = Field(default=25, ge=1)
 
     @model_validator(mode="after")
     def validate_windows(self) -> "BacktestRunRequest":
@@ -101,6 +105,10 @@ class BacktestCompareRequest(BaseModel):
     emergency_halt: bool = False
     max_trades_per_day: int = Field(default=5, ge=1)
     force_close_at_end: bool = False
+    max_total_exposure_pct: float = Field(default=1.0, gt=0, le=1)
+    max_open_positions: int = Field(default=25, ge=1)
+    cash_reserve_pct: float = Field(default=0.0, ge=0, lt=1)
+    max_new_positions_per_bar: int = Field(default=25, ge=1)
 
     @model_validator(mode="after")
     def validate_compare_bars(self) -> "BacktestCompareRequest":
@@ -128,6 +136,10 @@ class WalkForwardRequest(BaseModel):
     emergency_halt: bool = False
     max_trades_per_day: int = Field(default=5, ge=1)
     force_close_at_end: bool = False
+    max_total_exposure_pct: float = Field(default=1.0, gt=0, le=1)
+    max_open_positions: int = Field(default=25, ge=1)
+    cash_reserve_pct: float = Field(default=0.0, ge=0, lt=1)
+    max_new_positions_per_bar: int = Field(default=25, ge=1)
 
     @model_validator(mode="after")
     def validate_walk_forward_bars(self) -> "WalkForwardRequest":
@@ -194,6 +206,15 @@ class RiskRejection(BaseModel):
     source: str = "local_backtest_risk"
 
 
+class AllocationRejection(BaseModel):
+    symbol: str
+    timestamp: datetime
+    requested_quantity: float
+    approved_quantity: float = 0.0
+    reason: str
+    source: str = "synchronous_portfolio_allocator"
+
+
 class BacktestMetrics(BaseModel):
     initial_equity: float
     final_equity: float
@@ -211,6 +232,7 @@ class BacktestMetrics(BaseModel):
     realized_net_profit: float = 0.0
     unrealized_pnl: float = 0.0
     open_position_count: int = 0
+    allocation_rejections: int = 0
     risk_rejections: int = 0
     kill_switch_events: int = 0
 
@@ -220,10 +242,12 @@ class BacktestRunResult(BaseModel):
     symbols: List[str]
     execution_model: str = "next_bar_open"
     position_sizing_model: str = "current_equity_risk_and_position_cap"
+    allocation_policy: str = "timestamp_batch_symbol_ascending"
     metrics: BacktestMetrics
     trades: List[SimulatedTrade]
     equity_curve: List[EquityPoint]
     risk_rejections: List[RiskRejection] = Field(default_factory=list)
+    allocation_rejections: List[AllocationRejection] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
 

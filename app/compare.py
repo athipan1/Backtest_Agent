@@ -39,6 +39,8 @@ def compare_strategies(request: BacktestCompareRequest) -> BacktestCompareResult
             max_new_positions_per_bar=request.max_new_positions_per_bar,
             periods_per_year=request.periods_per_year,
             annual_risk_free_rate=request.annual_risk_free_rate,
+            max_volume_participation_pct=request.max_volume_participation_pct,
+            market_impact_bps=request.market_impact_bps,
         )
         result = run_backtest_with_risk(run_request)
         metrics = result.metrics

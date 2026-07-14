@@ -67,6 +67,48 @@ def test_trade_pair_publishes_total_round_trip_fees():
     assert rows[0]["realized_pl"] == 97.9
 
 
+def test_trade_pairs_allocate_entry_fees_across_partial_exits():
+    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = _trade_pairs(
+        [
+            SimulatedTrade(
+                symbol="AAPL",
+                side="buy",
+                quantity=10,
+                price=100,
+                fees=10,
+                timestamp=timestamp,
+            ),
+            SimulatedTrade(
+                symbol="AAPL",
+                side="sell",
+                quantity=4,
+                price=90,
+                fees=4,
+                timestamp=timestamp,
+                realized_pnl=-48,
+                requested_quantity=10,
+                fill_status="partial",
+            ),
+            SimulatedTrade(
+                symbol="AAPL",
+                side="sell",
+                quantity=6,
+                price=80,
+                fees=6,
+                timestamp=timestamp,
+                realized_pnl=-132,
+                requested_quantity=6,
+            ),
+        ]
+    )
+
+    assert [row["quantity"] for row in rows] == [4, 6]
+    assert [row["fees"] for row in rows] == [8, 12]
+    assert rows[0]["metadata"]["fill_status"] == "partial"
+    assert sum(row["fees"] for row in rows) == 20
+
+
 def test_build_database_backtest_payload_shapes_result_for_database_agent():
     request = _request()
     result = run_backtest_with_risk(request)
@@ -109,6 +151,12 @@ def test_build_database_backtest_payload_shapes_result_for_database_agent():
     assert "benchmark_return_pct" in payload["metrics"]
     assert "excess_return_pct" in payload["metrics"]
     assert payload["parameters"]["periods_per_year"] == 252
+    assert payload["parameters"]["max_volume_participation_pct"] == 1.0
+    assert payload["parameters"]["market_impact_bps"] == 0.0
+    assert payload["metadata"]["liquidity_model"] == "bar_volume_participation_with_linear_impact"
+    assert payload["metadata"]["liquidity_rejections"] == []
+    assert "partial_fills" in payload["metrics"]
+    assert "liquidity_rejections" in payload["metrics"]
     assert payload["equity_curve"]
     assert payload["metadata"]["source_agent"] == "backtest-agent"
     assert payload["metadata"]["test"] is True

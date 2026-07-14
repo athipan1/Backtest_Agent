@@ -17,6 +17,7 @@ It replays historical OHLCV bars, generates strategy signals, simulates fee and 
 - Round-trip fee accounting with realized/unrealized P/L separation
 - Current-equity risk-based position sizing
 - Synchronous multi-symbol portfolio allocation
+- Volume-aware partial fills and linear market impact
 - Equity curve
 - Risk-adjusted performance and buy-and-hold benchmark metrics
 
@@ -152,6 +153,37 @@ BACKTEST_ANNUAL_RISK_FREE_RATE
 These assumptions and all analytics are stored with Database_Agent evidence.
 Annualized ratios based on very short histories should not be treated as
 statistically reliable.
+
+## Volume-aware execution
+
+Entries and exits are limited to a configurable percentage of each OHLCV bar's
+reported volume. If an order is larger than the available quantity, the engine
+records a partial fill and continues an unfinished exit on later bars. A bar
+with zero available volume produces a `liquidity_rejection` rather than a
+fabricated fill.
+
+The optional market-impact model increases buy prices and decreases sell prices
+linearly with participation rate:
+
+```text
+participation rate = filled quantity / bar volume
+impact bps         = market_impact_bps * participation rate
+```
+
+Defaults preserve previous price behavior for datasets with sufficient non-zero
+volume: `max_volume_participation_pct=1.0` and `market_impact_bps=0.0`. Zero
+volume is still treated as unavailable liquidity. A more conservative starting
+policy for liquid stocks is 10% participation with non-zero impact, but it
+should be calibrated from the actual universe and timeframe. Scheduled runs can
+use:
+
+```text
+BACKTEST_MAX_VOLUME_PARTICIPATION_PCT
+BACKTEST_MARKET_IMPACT_BPS
+```
+
+Fill status, requested versus filled quantity, participation, impact, and
+liquidity rejections are persisted with Database_Agent evidence.
 
 ## Next phases
 

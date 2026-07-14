@@ -63,11 +63,15 @@ class BacktestRunRequest(BaseModel):
     max_new_positions_per_bar: int = Field(default=25, ge=1)
     periods_per_year: int = Field(default=252, ge=1)
     annual_risk_free_rate: float = Field(default=0.0, gt=-1)
+    max_volume_participation_pct: float = Field(default=1.0, gt=0, le=1)
+    market_impact_bps: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def validate_windows(self) -> "BacktestRunRequest":
         if self.fast_window >= self.slow_window:
             raise ValueError("fast_window must be smaller than slow_window")
+        if self.slippage_bps + self.market_impact_bps >= 10000:
+            raise ValueError("combined slippage and market impact must be below 10000 bps")
         missing = [symbol for symbol in self.symbols if symbol.upper() not in {key.upper() for key in self.bars}]
         if missing:
             raise ValueError(f"missing bars for symbols: {missing}")
@@ -113,9 +117,13 @@ class BacktestCompareRequest(BaseModel):
     max_new_positions_per_bar: int = Field(default=25, ge=1)
     periods_per_year: int = Field(default=252, ge=1)
     annual_risk_free_rate: float = Field(default=0.0, gt=-1)
+    max_volume_participation_pct: float = Field(default=1.0, gt=0, le=1)
+    market_impact_bps: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def validate_compare_bars(self) -> "BacktestCompareRequest":
+        if self.slippage_bps + self.market_impact_bps >= 10000:
+            raise ValueError("combined slippage and market impact must be below 10000 bps")
         missing = [symbol for symbol in self.symbols if symbol.upper() not in {key.upper() for key in self.bars}]
         if missing:
             raise ValueError(f"missing bars for symbols: {missing}")
@@ -146,9 +154,13 @@ class WalkForwardRequest(BaseModel):
     max_new_positions_per_bar: int = Field(default=25, ge=1)
     periods_per_year: int = Field(default=252, ge=1)
     annual_risk_free_rate: float = Field(default=0.0, gt=-1)
+    max_volume_participation_pct: float = Field(default=1.0, gt=0, le=1)
+    market_impact_bps: float = Field(default=0.0, ge=0)
 
     @model_validator(mode="after")
     def validate_walk_forward_bars(self) -> "WalkForwardRequest":
+        if self.slippage_bps + self.market_impact_bps >= 10000:
+            raise ValueError("combined slippage and market impact must be below 10000 bps")
         missing = [symbol for symbol in self.symbols if symbol.upper() not in {key.upper() for key in self.bars}]
         if missing:
             raise ValueError(f"missing bars for symbols: {missing}")
@@ -195,6 +207,12 @@ class SimulatedTrade(BaseModel):
     timestamp: datetime
     realized_pnl: float = 0.0
     reason: str = "signal"
+    requested_quantity: Optional[float] = None
+    fill_status: Literal["filled", "partial"] = "filled"
+    participation_rate: float = 0.0
+    market_impact_bps: float = 0.0
+    position_closed: bool = False
+    round_trip_realized_pnl: Optional[float] = None
 
 
 class EquityPoint(BaseModel):
@@ -219,6 +237,16 @@ class AllocationRejection(BaseModel):
     approved_quantity: float = 0.0
     reason: str
     source: str = "synchronous_portfolio_allocator"
+
+
+class LiquidityRejection(BaseModel):
+    symbol: str
+    timestamp: datetime
+    side: Literal["buy", "sell"]
+    requested_quantity: float
+    available_quantity: float = 0.0
+    reason: str = "bar_volume_limit"
+    source: str = "volume_aware_execution"
 
 
 class BacktestMetrics(BaseModel):
@@ -246,6 +274,8 @@ class BacktestMetrics(BaseModel):
     unrealized_pnl: float = 0.0
     open_position_count: int = 0
     allocation_rejections: int = 0
+    partial_fills: int = 0
+    liquidity_rejections: int = 0
     risk_rejections: int = 0
     kill_switch_events: int = 0
 
@@ -257,11 +287,13 @@ class BacktestRunResult(BaseModel):
     position_sizing_model: str = "current_equity_risk_and_position_cap"
     allocation_policy: str = "timestamp_batch_symbol_ascending"
     benchmark_model: str = "equal_weight_buy_and_hold_first_open_to_last_close"
+    liquidity_model: str = "bar_volume_participation_with_linear_impact"
     metrics: BacktestMetrics
     trades: List[SimulatedTrade]
     equity_curve: List[EquityPoint]
     risk_rejections: List[RiskRejection] = Field(default_factory=list)
     allocation_rejections: List[AllocationRejection] = Field(default_factory=list)
+    liquidity_rejections: List[LiquidityRejection] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
 

@@ -73,6 +73,13 @@ def test_hourly_run_identity_changes_when_risk_policy_changes(monkeypatch):
     assert conservative["run_id"] != calendar_annualization["run_id"]
     assert calendar_annualization["periods_per_year"] == 365
 
+    monkeypatch.setenv("BACKTEST_PERIODS_PER_YEAR", "252")
+    monkeypatch.setenv("BACKTEST_MAX_VOLUME_PARTICIPATION_PCT", "0.10")
+    liquidity_limited = _load_payload(provider=FakeProvider())
+
+    assert conservative["run_id"] != liquidity_limited["run_id"]
+    assert liquidity_limited["max_volume_participation_pct"] == 0.10
+
 
 def test_hourly_payload_fetches_deduplicated_batch_symbols(monkeypatch):
     monkeypatch.setenv("BACKTEST_SYMBOLS", "aapl, MSFT,AAPL")

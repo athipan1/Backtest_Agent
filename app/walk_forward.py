@@ -35,6 +35,8 @@ def _candidate_to_run_request(request: WalkForwardRequest, bars: Dict[str, List[
         max_open_positions=request.max_open_positions,
         cash_reserve_pct=request.cash_reserve_pct,
         max_new_positions_per_bar=request.max_new_positions_per_bar,
+        periods_per_year=request.periods_per_year,
+        annual_risk_free_rate=request.annual_risk_free_rate,
     )
 
 
@@ -87,6 +89,8 @@ def run_walk_forward_validation(request: WalkForwardRequest) -> WalkForwardResul
             max_open_positions=request.max_open_positions,
             cash_reserve_pct=request.cash_reserve_pct,
             max_new_positions_per_bar=request.max_new_positions_per_bar,
+            periods_per_year=request.periods_per_year,
+            annual_risk_free_rate=request.annual_risk_free_rate,
         )
     )
 

@@ -18,7 +18,7 @@ It replays historical OHLCV bars, generates strategy signals, simulates fee and 
 - Current-equity risk-based position sizing
 - Synchronous multi-symbol portfolio allocation
 - Equity curve
-- Basic performance metrics
+- Risk-adjusted performance and buy-and-hold benchmark metrics
 
 ## Run locally
 
@@ -121,6 +121,37 @@ BACKTEST_MAX_NEW_POSITIONS_PER_BAR
 
 Portfolio policy is persisted with Database_Agent evidence and included in the
 deterministic run identity.
+
+## Portfolio performance analytics
+
+Every run now reports:
+
+- `annualized_return`
+- `annualized_volatility`
+- `sharpe_ratio`
+- `sortino_ratio`
+- `calmar_ratio`
+- `benchmark_return_pct`
+- `excess_return_pct`
+
+The benchmark is a frictionless equal-weight buy-and-hold portfolio of the same
+symbols, measured from each symbol's first open to its final close. This makes
+it clear when an active strategy earns less than simply holding its universe.
+Drawdown includes losses from initial equity, including a loss on the first
+period.
+
+`periods_per_year` defaults to `252` for daily bars. Set it to match the input
+timeframe before interpreting annualized statistics. The annual risk-free rate
+defaults to zero. Scheduled runs can configure both with:
+
+```text
+BACKTEST_PERIODS_PER_YEAR
+BACKTEST_ANNUAL_RISK_FREE_RATE
+```
+
+These assumptions and all analytics are stored with Database_Agent evidence.
+Annualized ratios based on very short histories should not be treated as
+statistically reliable.
 
 ## Next phases
 

@@ -101,7 +101,14 @@ def test_build_database_backtest_payload_shapes_result_for_database_agent():
     assert payload["parameters"]["max_open_positions"] == request.max_open_positions
     assert payload["parameters"]["cash_reserve_pct"] == request.cash_reserve_pct
     assert payload["metadata"]["allocation_policy"] == "timestamp_batch_symbol_ascending"
+    assert payload["metadata"]["benchmark_model"] == "equal_weight_buy_and_hold_first_open_to_last_close"
     assert payload["metadata"]["allocation_rejections"] == []
+    assert "sharpe_ratio" in payload["metrics"]
+    assert "sortino_ratio" in payload["metrics"]
+    assert "calmar_ratio" in payload["metrics"]
+    assert "benchmark_return_pct" in payload["metrics"]
+    assert "excess_return_pct" in payload["metrics"]
+    assert payload["parameters"]["periods_per_year"] == 252
     assert payload["equity_curve"]
     assert payload["metadata"]["source_agent"] == "backtest-agent"
     assert payload["metadata"]["test"] is True

@@ -8,7 +8,7 @@ from app.database_client import DatabaseAgentClient
 from app.models import BacktestRunRequest, BacktestRunResult, SimulatedTrade
 
 
-ENGINE_VERSION = "backtest-agent-0.4.0"
+ENGINE_VERSION = "backtest-agent-0.5.0"
 
 
 def _iso(value: datetime) -> str:
@@ -141,6 +141,8 @@ def build_database_backtest_payload(
             "max_open_positions": request.max_open_positions,
             "cash_reserve_pct": request.cash_reserve_pct,
             "max_new_positions_per_bar": request.max_new_positions_per_bar,
+            "periods_per_year": request.periods_per_year,
+            "annual_risk_free_rate": request.annual_risk_free_rate,
         },
         "metrics": {
             "initial_equity": metrics.initial_equity,
@@ -151,6 +153,13 @@ def build_database_backtest_payload(
             "profit_factor": metrics.profit_factor,
             "expectancy": metrics.expectancy,
             "max_drawdown": metrics.max_drawdown,
+            "annualized_return": metrics.annualized_return,
+            "annualized_volatility": metrics.annualized_volatility,
+            "sharpe_ratio": metrics.sharpe_ratio,
+            "sortino_ratio": metrics.sortino_ratio,
+            "calmar_ratio": metrics.calmar_ratio,
+            "benchmark_return_pct": metrics.benchmark_return_pct,
+            "excess_return_pct": metrics.excess_return_pct,
             "realized_net_profit": metrics.realized_net_profit,
             "unrealized_pnl": metrics.unrealized_pnl,
             "open_position_count": metrics.open_position_count,
@@ -170,6 +179,7 @@ def build_database_backtest_payload(
             "execution_model": result.execution_model,
             "position_sizing_model": result.position_sizing_model,
             "allocation_policy": result.allocation_policy,
+            "benchmark_model": result.benchmark_model,
             "allocation_rejections": [
                 item.model_dump(mode="json")
                 for item in result.allocation_rejections

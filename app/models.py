@@ -61,6 +61,8 @@ class BacktestRunRequest(BaseModel):
     max_open_positions: int = Field(default=25, ge=1)
     cash_reserve_pct: float = Field(default=0.0, ge=0, lt=1)
     max_new_positions_per_bar: int = Field(default=25, ge=1)
+    periods_per_year: int = Field(default=252, ge=1)
+    annual_risk_free_rate: float = Field(default=0.0, gt=-1)
 
     @model_validator(mode="after")
     def validate_windows(self) -> "BacktestRunRequest":
@@ -109,6 +111,8 @@ class BacktestCompareRequest(BaseModel):
     max_open_positions: int = Field(default=25, ge=1)
     cash_reserve_pct: float = Field(default=0.0, ge=0, lt=1)
     max_new_positions_per_bar: int = Field(default=25, ge=1)
+    periods_per_year: int = Field(default=252, ge=1)
+    annual_risk_free_rate: float = Field(default=0.0, gt=-1)
 
     @model_validator(mode="after")
     def validate_compare_bars(self) -> "BacktestCompareRequest":
@@ -140,6 +144,8 @@ class WalkForwardRequest(BaseModel):
     max_open_positions: int = Field(default=25, ge=1)
     cash_reserve_pct: float = Field(default=0.0, ge=0, lt=1)
     max_new_positions_per_bar: int = Field(default=25, ge=1)
+    periods_per_year: int = Field(default=252, ge=1)
+    annual_risk_free_rate: float = Field(default=0.0, gt=-1)
 
     @model_validator(mode="after")
     def validate_walk_forward_bars(self) -> "WalkForwardRequest":
@@ -229,6 +235,13 @@ class BacktestMetrics(BaseModel):
     profit_factor: Optional[float]
     expectancy: float
     max_drawdown: float
+    annualized_return: Optional[float] = None
+    annualized_volatility: Optional[float] = None
+    sharpe_ratio: Optional[float] = None
+    sortino_ratio: Optional[float] = None
+    calmar_ratio: Optional[float] = None
+    benchmark_return_pct: Optional[float] = None
+    excess_return_pct: Optional[float] = None
     realized_net_profit: float = 0.0
     unrealized_pnl: float = 0.0
     open_position_count: int = 0
@@ -243,6 +256,7 @@ class BacktestRunResult(BaseModel):
     execution_model: str = "next_bar_open"
     position_sizing_model: str = "current_equity_risk_and_position_cap"
     allocation_policy: str = "timestamp_batch_symbol_ascending"
+    benchmark_model: str = "equal_weight_buy_and_hold_first_open_to_last_close"
     metrics: BacktestMetrics
     trades: List[SimulatedTrade]
     equity_curve: List[EquityPoint]

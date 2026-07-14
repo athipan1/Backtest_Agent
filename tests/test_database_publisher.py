@@ -93,6 +93,10 @@ def test_build_database_backtest_payload_shapes_result_for_database_agent():
     assert "realized_net_profit" in payload["metrics"]
     assert "unrealized_pnl" in payload["metrics"]
     assert payload["metadata"]["execution_model"] == "next_bar_open"
+    assert payload["metadata"]["position_sizing_model"] == "current_equity_risk_and_position_cap"
+    assert payload["parameters"]["risk_per_trade"] == request.risk_per_trade
+    assert payload["parameters"]["max_position_pct"] == request.max_position_pct
+    assert payload["parameters"]["stop_loss_pct"] == request.stop_loss_pct
     assert payload["equity_curve"]
     assert payload["metadata"]["source_agent"] == "backtest-agent"
     assert payload["metadata"]["test"] is True

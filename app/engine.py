@@ -62,6 +62,35 @@ def _take_profit_price(entry_price: float, stop_loss: float, request: BacktestRu
     return entry_price + (risk_per_share * request.reward_risk_ratio)
 
 
+def _position_size(
+    *,
+    cash: float,
+    current_equity: float,
+    entry_price: float,
+    stop_loss: float,
+    risk_per_trade: float,
+    max_position_pct: float,
+    fee_bps: float,
+) -> int:
+    """Return a long quantity bounded by risk, allocation, and available cash."""
+    if cash <= 0 or current_equity <= 0 or entry_price <= 0:
+        return 0
+    risk_per_share = entry_price - stop_loss
+    if risk_per_share <= 0:
+        return 0
+
+    quantity_by_risk = int((current_equity * risk_per_trade) / risk_per_share)
+    quantity_by_position_cap = int(
+        (current_equity * max_position_pct) / entry_price
+    )
+    entry_cost_per_share = entry_price * (1.0 + fee_bps / 10000.0)
+    quantity_by_cash = int(cash / entry_cost_per_share)
+    return max(
+        0,
+        min(quantity_by_risk, quantity_by_position_cap, quantity_by_cash),
+    )
+
+
 def _exit_position(
     *,
     symbol: str,
@@ -203,7 +232,9 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
     last_prices: Dict[str, float] = {}
     last_bars: Dict[str, PriceBar] = {}
     for _, symbol, bar in timeline:
-        last_prices[symbol] = bar.close
+        # Orders execute at the open, so current equity must be marked with
+        # information available at that time rather than the future close.
+        last_prices[symbol] = bar.open
         last_bars[symbol] = bar
         position = positions[symbol]
 
@@ -212,14 +243,25 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
         # fill an order at that same close.
         pending_signal = pending_signals[symbol]
         if pending_signal == "buy" and position.quantity <= 0:
-            max_position_value = request.initial_equity * request.max_position_pct
             price = _buy_price(bar.open, request.slippage_bps)
-            quantity = int(max_position_value / price)
+            stop_loss = _stop_loss_price(price, request)
+            current_equity = cash + sum(
+                pos.quantity * last_prices.get(sym, pos.average_price)
+                for sym, pos in positions.items()
+            )
+            quantity = _position_size(
+                cash=cash,
+                current_equity=current_equity,
+                entry_price=price,
+                stop_loss=stop_loss,
+                risk_per_trade=request.risk_per_trade,
+                max_position_pct=request.max_position_pct,
+                fee_bps=request.fee_bps,
+            )
             cost = price * quantity
             fees = _fee(cost, request.fee_bps)
             if quantity > 0 and cash >= cost + fees:
                 cash -= cost + fees
-                stop_loss = _stop_loss_price(price, request)
                 position.quantity = float(quantity)
                 position.average_price = price
                 position.entry_fees = fees
@@ -265,6 +307,7 @@ def run_backtest(request: BacktestRunRequest) -> BacktestRunResult:
             request.slow_window,
         )
 
+        last_prices[symbol] = bar.close
         equity = cash + sum(pos.quantity * last_prices.get(sym, pos.average_price) for sym, pos in positions.items())
         equity_curve.append(EquityPoint(timestamp=bar.timestamp, equity=round(equity, 2)))
 

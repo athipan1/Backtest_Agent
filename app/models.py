@@ -219,6 +219,7 @@ class BacktestRunResult(BaseModel):
     strategy: str
     symbols: List[str]
     execution_model: str = "next_bar_open"
+    position_sizing_model: str = "current_equity_risk_and_position_cap"
     metrics: BacktestMetrics
     trades: List[SimulatedTrade]
     equity_curve: List[EquityPoint]

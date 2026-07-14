@@ -43,6 +43,23 @@ def test_hourly_payload_uses_provider_and_deterministic_identity(monkeypatch):
     assert len(first["metadata"]["dataset_fingerprint"]) == 64
 
 
+def test_hourly_run_identity_changes_when_risk_policy_changes(monkeypatch):
+    monkeypatch.delenv("BACKTEST_SYMBOLS", raising=False)
+    monkeypatch.setenv("BACKTEST_SYMBOL", "AAPL")
+    monkeypatch.setenv("BACKTEST_MINIMUM_BARS", "2")
+    monkeypatch.setenv("BACKTEST_START", "2026-01-01T00:00:00Z")
+    monkeypatch.setenv("BACKTEST_END", "2026-02-01T00:00:00Z")
+    monkeypatch.setenv("BACKTEST_RISK_PER_TRADE", "0.01")
+    conservative = _load_payload(provider=FakeProvider())
+
+    monkeypatch.setenv("BACKTEST_RISK_PER_TRADE", "0.02")
+    aggressive = _load_payload(provider=FakeProvider())
+
+    assert conservative["run_id"] != aggressive["run_id"]
+    assert conservative["risk_per_trade"] == 0.01
+    assert aggressive["risk_per_trade"] == 0.02
+
+
 def test_hourly_payload_fetches_deduplicated_batch_symbols(monkeypatch):
     monkeypatch.setenv("BACKTEST_SYMBOLS", "aapl, MSFT,AAPL")
     monkeypatch.setenv("BACKTEST_MAX_SYMBOLS", "10")

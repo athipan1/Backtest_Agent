@@ -47,6 +47,7 @@ POST /backtest/run-and-publish
 POST /backtest/run-and-publish-batch
 POST /backtest/compare
 POST /backtest/multi-strategy
+POST /backtest/multi-strategy/walk-forward
 POST /backtest/walk-forward
 POST /backtest/robustness
 POST /backtest/report
@@ -69,6 +70,25 @@ The response exposes `best_overall` for diagnostics and `best_eligible` for orch
 The endpoint rejects requests containing more than one symbol. Callers must evaluate each Scanner-selected symbol independently so strategy evidence cannot leak between symbols.
 
 See `docs/MULTI_STRATEGY_SELECTION.md` for the default suite, scoring model, and safety gates.
+
+### `POST /backtest/multi-strategy/walk-forward`
+
+Runs the exact-symbol multi-strategy comparison and then validates every fixed candidate across rolling out-of-sample test windows.
+
+A candidate is eligible only when:
+
+- every full-period selection gate passes
+- the minimum number of rolling windows is available
+- the configured share of windows is profitable
+- median Sharpe and median profit factor pass
+- worst out-of-sample drawdown remains inside the configured floor
+- aggregate kill-switch events remain within the configured limit
+
+The default chronology uses 126 training bars, 126 out-of-sample test bars, a 63-bar step, and at least four completed windows. Test simulations use only their chronological test slice; future bars never enter an earlier window.
+
+Each ranked result includes full-period metrics plus `walk_forward` stability evidence and per-window date boundaries. `best_eligible` and `selected_result` are null unless both validation layers pass. Insufficient history is a safe no-trade result and must not fall back to full-period-only evidence.
+
+See `docs/WALK_FORWARD_MULTI_STRATEGY.md` for the window design, default stability gates, and expected orchestration.
 
 ### `POST /backtest/run-and-publish`
 
@@ -124,3 +144,4 @@ when any requested simulation or required database publish fails.
 6. Database publishing is storage-only. It does not submit, cancel, approve, or modify broker orders.
 7. Batch execution is bounded and sequential; it does not call broker trading APIs.
 8. Multi-strategy selection is exact-symbol scoped and must not promote an ineligible strategy.
+9. Walk-forward selection must not promote full-period-only evidence when rolling validation fails or history is insufficient.

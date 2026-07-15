@@ -5,11 +5,15 @@ from typing import Any, Dict
 
 from fastapi import APIRouter
 
+from app.multi_strategy import router as multi_strategy_router
+
+
 BACKTEST_AGENT_TYPE = "backtest-agent"
 BACKTEST_AGENT_VERSION = "0.1.0"
 SCHEMA_VERSION = "1.0"
 
 router = APIRouter()
+router.include_router(multi_strategy_router)
 
 
 def utc_timestamp() -> str:
@@ -62,6 +66,7 @@ def ready() -> Dict[str, Any]:
             "ready": True,
             "run_endpoint": "/backtest/run",
             "compare_endpoint": "/backtest/compare",
+            "multi_strategy_endpoint": "/backtest/multi-strategy",
             "walk_forward_endpoint": "/backtest/walk-forward",
             "robustness_endpoint": "/backtest/robustness",
             "report_endpoint": "/backtest/report",
@@ -71,6 +76,12 @@ def ready() -> Dict[str, Any]:
                 "mean_reversion",
                 "breakout",
             ],
+            "multi_strategy_profile": "balanced_v1",
+            "multi_strategy_selection": {
+                "exact_symbol_only": True,
+                "returns_best_eligible": True,
+                "safety_gated": True,
+            },
         },
         metadata={
             "contract_source": "backtest-agent-runtime-contract",

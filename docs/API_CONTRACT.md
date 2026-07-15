@@ -46,9 +46,29 @@ POST /backtest/run
 POST /backtest/run-and-publish
 POST /backtest/run-and-publish-batch
 POST /backtest/compare
+POST /backtest/multi-strategy
 POST /backtest/walk-forward
+POST /backtest/robustness
 POST /backtest/report
 ```
+
+### `POST /backtest/multi-strategy`
+
+Runs multiple strategy configurations for exactly one symbol. When candidates are omitted, the endpoint evaluates the deterministic `balanced_v1` suite containing SMA crossover, trend following, mean reversion, and breakout strategies.
+
+Each ranked result contains:
+
+- exact `strategy_id`
+- strategy name and effective parameters
+- performance metrics and score components
+- selection gate results
+- eligibility status and disqualification reasons
+
+The response exposes `best_overall` for diagnostics and `best_eligible` for orchestration. `best_eligible` is null unless every configured selection gate passes. `selected_result` contains the full simulation result only for the eligible selection.
+
+The endpoint rejects requests containing more than one symbol. Callers must evaluate each Scanner-selected symbol independently so strategy evidence cannot leak between symbols.
+
+See `docs/MULTI_STRATEGY_SELECTION.md` for the default suite, scoring model, and safety gates.
 
 ### `POST /backtest/run-and-publish`
 
@@ -103,3 +123,4 @@ when any requested simulation or required database publish fails.
 5. Risk and Execution controls remain required outside simulation.
 6. Database publishing is storage-only. It does not submit, cancel, approve, or modify broker orders.
 7. Batch execution is bounded and sequential; it does not call broker trading APIs.
+8. Multi-strategy selection is exact-symbol scoped and must not promote an ineligible strategy.

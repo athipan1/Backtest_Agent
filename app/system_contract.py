@@ -6,6 +6,7 @@ from typing import Any, Dict
 from fastapi import APIRouter
 
 from app.multi_strategy import router as multi_strategy_router
+from app.multi_strategy_walk_forward import router as multi_strategy_walk_forward_router
 
 
 BACKTEST_AGENT_TYPE = "backtest-agent"
@@ -14,6 +15,7 @@ SCHEMA_VERSION = "1.0"
 
 router = APIRouter()
 router.include_router(multi_strategy_router)
+router.include_router(multi_strategy_walk_forward_router)
 
 
 def utc_timestamp() -> str:
@@ -67,6 +69,9 @@ def ready() -> Dict[str, Any]:
             "run_endpoint": "/backtest/run",
             "compare_endpoint": "/backtest/compare",
             "multi_strategy_endpoint": "/backtest/multi-strategy",
+            "multi_strategy_walk_forward_endpoint": (
+                "/backtest/multi-strategy/walk-forward"
+            ),
             "walk_forward_endpoint": "/backtest/walk-forward",
             "robustness_endpoint": "/backtest/robustness",
             "report_endpoint": "/backtest/report",
@@ -81,6 +86,14 @@ def ready() -> Dict[str, Any]:
                 "exact_symbol_only": True,
                 "returns_best_eligible": True,
                 "safety_gated": True,
+            },
+            "multi_strategy_walk_forward": {
+                "rolling_out_of_sample": True,
+                "default_train_bars": 126,
+                "default_test_bars": 126,
+                "default_step_bars": 63,
+                "default_min_windows": 4,
+                "requires_full_period_and_walk_forward": True,
             },
         },
         metadata={

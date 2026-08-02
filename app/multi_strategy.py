@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
 from app.models import (
@@ -16,6 +16,12 @@ from app.models import (
     StrategyName,
 )
 from app.risk_engine import run_backtest_with_risk
+from app.security import require_backtest_api_key
+from app.statistical_validation import (
+    StatisticalValidationCriteria,
+    StatisticalValidationResult,
+    run_statistical_validation,
+)
 
 
 router = APIRouter()
@@ -91,6 +97,9 @@ class MultiStrategyBacktestRequest(BacktestCompareRequest):
     selection_criteria: StrategySelectionCriteria = Field(
         default_factory=StrategySelectionCriteria
     )
+    statistical_criteria: StatisticalValidationCriteria = Field(
+        default_factory=StatisticalValidationCriteria
+    )
 
     @model_validator(mode="after")
     def validate_candidate_identities(self) -> "MultiStrategyBacktestRequest":
@@ -122,6 +131,7 @@ class MultiStrategyResultItem(BaseModel):
     score: float
     score_components: Dict[str, float]
     metrics: BacktestMetrics
+    statistical_evidence: StatisticalValidationResult
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -130,6 +140,7 @@ class MultiStrategyBacktestResult(BaseModel):
     candidate_source: Literal["balanced_v1", "provided"]
     selection_status: Literal["eligible_strategy_found", "no_eligible_strategy"]
     selection_criteria: StrategySelectionCriteria
+    statistical_criteria: StatisticalValidationCriteria
     evaluated_count: int
     eligible_count: int
     ranked_results: List[MultiStrategyResultItem]
@@ -319,19 +330,53 @@ def score_components(metrics: BacktestMetrics) -> Dict[str, float]:
     return {name: round(value, 6) for name, value in components.items()}
 
 
+def _statistical_score_component(
+    evidence: StatisticalValidationResult,
+) -> float:
+    if evidence.status == "disabled":
+        return 0.0
+    psr = evidence.probabilistic_sharpe_ratio or 0.0
+    dsr = evidence.deflated_sharpe_probability or 0.0
+    bootstrap_lower = evidence.bootstrap_annualized_return_lower or 0.0
+    return round(
+        0.05 * psr
+        + 0.10 * dsr
+        + 0.05 * _bounded(bootstrap_lower, -1.0, 1.0),
+        6,
+    )
+
+
 def run_multi_strategy_backtest(
     request: MultiStrategyBacktestRequest,
 ) -> MultiStrategyBacktestResult:
     evaluated: List[tuple[MultiStrategyResultItem, BacktestRunResult]] = []
+    candidate_count = len(request.candidates)
 
     for candidate in request.candidates:
         run_request = build_run_request(candidate, request)
         result = run_backtest_with_risk(run_request)
-        gates, reasons = evaluate_selection_gates(
+        performance_gates, performance_reasons = evaluate_selection_gates(
             result.metrics,
             request.selection_criteria,
         )
+        statistical_evidence = run_statistical_validation(
+            result,
+            candidate_count=candidate_count,
+            periods_per_year=request.periods_per_year,
+            criteria=request.statistical_criteria,
+        )
+        gates = {
+            **performance_gates,
+            **{
+                f"statistical_{name}": passed
+                for name, passed in statistical_evidence.gates.items()
+            },
+        }
+        reasons = performance_reasons + statistical_evidence.reasons
         components = score_components(result.metrics)
+        components["statistical_confidence"] = _statistical_score_component(
+            statistical_evidence
+        )
         strategy_id = resolve_strategy_id(candidate, request)
         evaluated.append(
             (
@@ -349,6 +394,7 @@ def run_multi_strategy_backtest(
                     score=round(sum(components.values()), 6),
                     score_components=components,
                     metrics=result.metrics,
+                    statistical_evidence=statistical_evidence,
                     warnings=result.warnings,
                 ),
                 result,
@@ -376,8 +422,8 @@ def run_multi_strategy_backtest(
     warnings: List[str] = []
     if not best_eligible:
         warnings.append(
-            "No strategy passed every selection gate; do not promote this symbol "
-            "to Risk or Execution."
+            "No strategy passed every performance and statistical selection "
+            "gate; do not promote this symbol to Risk or Execution."
         )
 
     candidate_source: Literal["balanced_v1", "provided"] = (
@@ -392,6 +438,7 @@ def run_multi_strategy_backtest(
             else "no_eligible_strategy"
         ),
         selection_criteria=request.selection_criteria,
+        statistical_criteria=request.statistical_criteria,
         evaluated_count=len(ranked),
         eligible_count=len(eligible_pairs),
         ranked_results=ranked,
@@ -405,6 +452,7 @@ def run_multi_strategy_backtest(
 @router.post(
     "/backtest/multi-strategy",
     response_model=StandardAgentResponse[MultiStrategyBacktestResult],
+    dependencies=[Depends(require_backtest_api_key)],
 )
 def backtest_multi_strategy(
     request: MultiStrategyBacktestRequest,

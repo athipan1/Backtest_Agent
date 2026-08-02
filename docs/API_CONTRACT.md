@@ -78,14 +78,21 @@ Each ranked result contains:
 - exact `strategy_id`
 - strategy name and effective parameters
 - performance metrics and score components
-- selection gate results
+- performance, risk, and statistical gate results
+- `statistical_evidence`
 - eligibility status and disqualification reasons
 
-The response exposes `best_overall` for diagnostics and `best_eligible` for orchestration. `best_eligible` is null unless every configured selection gate passes. `selected_result` contains the simulation result only for the eligible selection.
+The default statistical evidence includes observation/trade sufficiency, a one-sided mean test, Bonferroni multiple-testing adjustment, Probabilistic Sharpe Ratio, Deflated Sharpe probability, and a deterministic bootstrap confidence interval for annualized mean return.
+
+The number of evaluated candidates is included in every statistical result. Trying more candidates increases the multiple-testing penalty and expected maximum Sharpe benchmark.
+
+The response exposes `best_overall` for diagnostics and `best_eligible` for orchestration. `best_eligible` is null unless every configured performance, safety, and enabled statistical gate passes. `selected_result` contains the simulation result only for the eligible selection.
+
+The statistical policy is configurable through `statistical_criteria`. Setting `enabled=false` is explicit and visible in the response. Production orchestration should keep the layer enabled.
 
 The endpoint rejects requests containing more than one symbol. Callers evaluate each Scanner-selected symbol independently so strategy evidence cannot leak between symbols.
 
-See `docs/MULTI_STRATEGY_SELECTION.md` for the default suite, scoring model, and safety gates.
+See `docs/MULTI_STRATEGY_SELECTION.md` for the strategy suite and scoring model. See `docs/STATISTICAL_VALIDATION.md` for statistical methods, defaults, response fields, and limitations.
 
 ### `POST /backtest/multi-strategy/walk-forward`
 
@@ -93,7 +100,7 @@ Performs true nested walk-forward strategy selection for one exact symbol.
 
 For every chronological window the service:
 
-1. ranks all candidates using only the training slice
+1. ranks all candidates using only the training slice, including enabled statistical gates
 2. selects the best eligible training candidate, or records the best diagnostic candidate when none is eligible
 3. applies an optional embargo gap
 4. evaluates only that selected candidate on the untouched future test slice
@@ -174,5 +181,6 @@ Each result item contains its own `run_id`, simulation result, publish status, d
 6. Database publishing is storage-only. It does not submit, cancel, approve, or modify broker orders.
 7. Batch execution is bounded and sequential; it does not call broker trading APIs.
 8. Multi-strategy selection is exact-symbol scoped and must not promote an ineligible strategy.
-9. Nested walk-forward selection must not use future test data to choose a candidate for that historical window.
-10. Full-period-only evidence cannot override failed nested validation or insufficient history.
+9. Statistical confidence must account for sample size and the number of candidates tested.
+10. Nested walk-forward selection must not use future test data to choose a candidate for that historical window.
+11. Full-period-only evidence cannot override failed nested validation or insufficient history.

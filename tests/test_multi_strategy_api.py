@@ -42,15 +42,47 @@ def test_multi_strategy_endpoint_uses_balanced_default_suite():
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "success"
-    assert payload["data"]["symbol"] == "AAPL"
-    assert payload["data"]["candidate_source"] == "balanced_v1"
-    assert payload["data"]["evaluated_count"] == 4
-    assert len(payload["data"]["ranked_results"]) == 4
-    assert payload["data"]["best_overall"]["rank"] == 1
-    assert payload["data"]["selection_status"] in {
+    data = payload["data"]
+    assert data["symbol"] == "AAPL"
+    assert data["candidate_source"] == "balanced_v1"
+    assert data["evaluated_count"] == 4
+    assert len(data["ranked_results"]) == 4
+    assert data["best_overall"]["rank"] == 1
+    assert data["selection_status"] in {
         "eligible_strategy_found",
         "no_eligible_strategy",
     }
+
+    evidence = data["ranked_results"][0]["statistical_evidence"]
+    assert evidence["candidate_count"] == 4
+    assert evidence["status"] in {
+        "completed",
+        "insufficient_data",
+    }
+    assert "statistical_confidence" in data["ranked_results"][0]["score_components"]
+    assert data["statistical_criteria"]["enabled"] is True
+
+
+def test_multi_strategy_endpoint_can_explicitly_disable_statistical_gate():
+    response = client.post(
+        "/backtest/multi-strategy",
+        json={
+            "symbols": ["AAPL"],
+            "initial_equity": 100000,
+            "bars": {"AAPL": bars()},
+            "fee_bps": 0,
+            "slippage_bps": 0,
+            "force_close_at_end": True,
+            "statistical_criteria": {"enabled": False},
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert all(
+        item["statistical_evidence"]["status"] == "disabled"
+        for item in data["ranked_results"]
+    )
 
 
 def test_multi_strategy_endpoint_rejects_multiple_symbols():
@@ -66,7 +98,7 @@ def test_multi_strategy_endpoint_rejects_multiple_symbols():
     assert response.status_code == 422
 
 
-def test_ready_contract_advertises_multi_strategy_selection():
+def test_ready_contract_advertises_statistical_multi_strategy_selection():
     response = client.get("/ready")
 
     assert response.status_code == 200
@@ -77,4 +109,9 @@ def test_ready_contract_advertises_multi_strategy_selection():
         "exact_symbol_only": True,
         "returns_best_eligible": True,
         "safety_gated": True,
+        "statistical_gates": True,
+        "multiple_testing_adjustment": "bonferroni",
+        "probabilistic_sharpe": True,
+        "deflated_sharpe": True,
+        "bootstrap_confidence_interval": True,
     }

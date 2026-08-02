@@ -12,7 +12,7 @@ Nested walk-forward answers the harder question:
 
 1. Which strategy would the system select using only the training window?
 2. How does that selected strategy perform in the untouched future test window?
-3. Does this process remain stable across several independent chronological windows?
+3. Does this adaptive selection process remain stable across several independent chronological windows?
 
 ## Window algorithm
 
@@ -61,16 +61,17 @@ Medians are used so one unusually strong test window cannot hide several weak wi
 
 ## Promotion authority
 
-Full-period metrics remain in the response for diagnostics and comparison, but they do not grant promotion.
+Full-period and fixed-candidate metrics remain in the response for diagnostics and comparison, but they do not grant or veto adaptive promotion by themselves.
 
 A strategy can become `best_eligible` only when:
 
 - the aggregate nested out-of-sample gates pass
 - the latest training window selected that exact `strategy_id`
 - the latest training selection was eligible under the configured train gates
-- the selected candidate's fixed-candidate out-of-sample stability gates pass
 
-When these conditions are not satisfied, `best_eligible` and `selected_result` are null.
+This preserves the adaptive design: historical windows may legitimately choose different strategies as regimes change. The fixed-candidate `walk_forward` block shows how each candidate would have behaved if held constant across all windows, but the top-level `nested_walk_forward` block is the promotion authority.
+
+When the nested conditions are not satisfied, `best_eligible` and `selected_result` are null.
 
 ## Response evidence
 
@@ -98,7 +99,7 @@ Each window includes:
 - future test metrics
 - warnings
 
-Each ranked candidate also retains fixed-candidate out-of-sample evidence as a diagnostic robustness view.
+Each ranked candidate also retains fixed-candidate out-of-sample evidence as a diagnostic robustness view. Its gate failures explain fixed-policy weakness, not a separate veto over the adaptive nested process.
 
 ## Insufficient history
 

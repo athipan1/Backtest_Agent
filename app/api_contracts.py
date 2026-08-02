@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from app.execution_policy import ExecutionRealismPolicy
 from app.models import (
     BacktestCompareRequest,
     BacktestRobustnessRequest,
@@ -144,6 +145,9 @@ class StrictBacktestRunRequest(BacktestRunRequest):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     symbols: List[str] = Field(min_length=1, max_length=25)
     bars: Dict[str, List[StrictPriceBar]]
+    execution_policy: ExecutionRealismPolicy = Field(
+        default_factory=ExecutionRealismPolicy
+    )
 
     _normalize_symbols = field_validator("symbols", mode="before")(
         _normalize_symbols
@@ -159,6 +163,9 @@ class StrictBacktestRobustnessRequest(BacktestRobustnessRequest):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     symbols: List[str] = Field(min_length=1, max_length=25)
     bars: Dict[str, List[StrictPriceBar]]
+    execution_policy: ExecutionRealismPolicy = Field(
+        default_factory=ExecutionRealismPolicy
+    )
 
     _normalize_symbols = field_validator("symbols", mode="before")(
         _normalize_symbols

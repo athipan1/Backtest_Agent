@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from app.data_provider import dataset_fingerprint
+from app.execution_policy import execution_policy_metadata
 from app.models import BacktestRunRequest, PriceBar
 
 
@@ -35,11 +36,7 @@ def exact_symbol_identity(
     timeframe: str,
     engine_version: str,
 ) -> dict[str, Any]:
-    """Build a stable identity from one symbol's data and exact run policy.
-
-    Batch-level correlation fields are deliberately excluded so changing another
-    symbol in the same batch cannot change this symbol's database run identity.
-    """
+    """Build a stable identity from one symbol's data and exact run policy."""
 
     normalized_symbol = symbol.strip().upper()
     bars = _bars_for_exact_symbol(request, normalized_symbol)
@@ -52,6 +49,7 @@ def exact_symbol_identity(
     )
     for field in _NON_SIMULATION_FIELDS:
         parameters.pop(field, None)
+    parameters["execution_policy"] = execution_policy_metadata(request)
 
     return {
         "dataset_fingerprint": dataset_fingerprint(

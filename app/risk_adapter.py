@@ -1,16 +1,11 @@
 from __future__ import annotations
 
+from app.execution_policy import quantize_quantity
 from app.models import RiskCheckPayload, RiskDecision
 
 
 class LocalRiskAdapter:
-    """Deterministic Risk_Agent-compatible adapter for backtest simulations.
-
-    This local adapter mirrors the most important safety semantics used in live
-    risk checks: emergency halt, trade count circuit breaker, positive quantity,
-    per-trade loss budget, and max position allocation. A future adapter can
-    call the real Risk_Agent over HTTP using the same payload/decision contract.
-    """
+    """Deterministic local adapter for simulated quantity checks."""
 
     def evaluate(
         self,
@@ -57,6 +52,11 @@ class LocalRiskAdapter:
             if final_quantity > risk_quantity:
                 final_quantity = risk_quantity
                 warnings.append("quantity_clipped_to_risk_budget")
+
+        aligned_quantity = quantize_quantity(final_quantity)
+        if aligned_quantity != int(final_quantity):
+            warnings.append("quantity_rounded_to_execution_increment")
+        final_quantity = aligned_quantity
 
         approved = not violations and final_quantity > 0
         return RiskDecision(

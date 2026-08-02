@@ -5,10 +5,11 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from app.database_client import DatabaseAgentClient
+from app.execution_policy import execution_policy_metadata
 from app.models import BacktestRunRequest, BacktestRunResult, SimulatedTrade
 
 
-ENGINE_VERSION = "backtest-agent-0.6.0"
+ENGINE_VERSION = "backtest-agent-0.7.0"
 
 
 def _iso(value: datetime) -> str:
@@ -41,13 +42,7 @@ def _outcome(realized_pl: float) -> str:
 
 
 def _trade_pairs(trades: List[SimulatedTrade]) -> List[Dict[str, Any]]:
-    """Convert the event-like simulation trades into Database_Agent trade rows.
-
-    The engine records buy/sell events. Database_Agent's backtest foundation is
-    happier with closed trade rows, so we pair each sell with the latest open buy
-    for the same symbol. Unpaired entries are ignored because they are not closed
-    outcomes yet.
-    """
+    """Convert event-like simulation fills into closed Database_Agent rows."""
 
     open_entries: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
@@ -133,9 +128,14 @@ def build_database_backtest_payload(
     timeframe: str = "1d",
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    primary_symbol = result.symbols[0].upper() if result.symbols else request.symbols[0].upper()
+    primary_symbol = (
+        result.symbols[0].upper()
+        if result.symbols
+        else request.symbols[0].upper()
+    )
     start_time, end_time = _time_bounds(request, primary_symbol)
     metrics = result.metrics
+    execution_policy = execution_policy_metadata(request)
 
     return {
         "run_id": run_id or f"backtest-{uuid4().hex}",
@@ -169,6 +169,7 @@ def build_database_backtest_payload(
             "annual_risk_free_rate": request.annual_risk_free_rate,
             "max_volume_participation_pct": request.max_volume_participation_pct,
             "market_impact_bps": request.market_impact_bps,
+            "execution_policy": execution_policy,
         },
         "metrics": {
             "initial_equity": metrics.initial_equity,
@@ -205,6 +206,7 @@ def build_database_backtest_payload(
             "symbols": result.symbols,
             "strategy": result.strategy,
             "execution_model": result.execution_model,
+            "execution_policy": execution_policy,
             "position_sizing_model": result.position_sizing_model,
             "allocation_policy": result.allocation_policy,
             "benchmark_model": result.benchmark_model,
@@ -250,7 +252,11 @@ def publish_backtest_result(
     client = database_client or DatabaseAgentClient()
     response = client.publish_backtest_run(payload, correlation_id=correlation_id)
     return {
-        "status": response.get("status", "success") if isinstance(response, dict) else "success",
+        "status": (
+            response.get("status", "success")
+            if isinstance(response, dict)
+            else "success"
+        ),
         "database_response": response,
         "payload": payload,
     }

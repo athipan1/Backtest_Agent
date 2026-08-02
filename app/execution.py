@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from math import floor
 
+from app.execution_policy import current_execution_policy, quantize_quantity
+
 
 def volume_capacity(volume: float, max_participation_pct: float) -> int:
     if volume <= 0 or max_participation_pct <= 0:
         return 0
-    return max(0, floor(volume * max_participation_pct))
+    return quantize_quantity(max(0, floor(volume * max_participation_pct)))
 
 
 def participation_rate(quantity: float, volume: float) -> float:
@@ -31,8 +33,12 @@ def buy_execution_price(
     quantity: float,
     volume: float,
 ) -> float:
+    policy = current_execution_policy()
     impact = linear_market_impact_bps(quantity, volume, market_impact_bps)
-    return reference_price * (1.0 + (slippage_bps + impact) / 10000.0)
+    half_spread = policy.bid_ask_spread_bps / 2.0
+    return reference_price * (
+        1.0 + (slippage_bps + impact + half_spread) / 10000.0
+    )
 
 
 def sell_execution_price(
@@ -43,8 +49,12 @@ def sell_execution_price(
     quantity: float,
     volume: float,
 ) -> float:
+    policy = current_execution_policy()
     impact = linear_market_impact_bps(quantity, volume, market_impact_bps)
-    return reference_price * (1.0 - (slippage_bps + impact) / 10000.0)
+    half_spread = policy.bid_ask_spread_bps / 2.0
+    return reference_price * (
+        1.0 - (slippage_bps + impact + half_spread) / 10000.0
+    )
 
 
 def max_entry_quantity(
@@ -63,8 +73,13 @@ def max_entry_quantity(
     max_position_pct: float,
     stop_loss_pct: float,
 ) -> int:
-    """Find the largest integer fill satisfying liquidity and risk constraints."""
-    upper = max(0, min(requested_quantity, available_volume_quantity))
+    """Find the largest increment-aligned fill satisfying every constraint."""
+
+    policy = current_execution_policy()
+    increment = policy.quantity_increment
+    upper = quantize_quantity(
+        max(0, min(requested_quantity, available_volume_quantity))
+    )
 
     def allowed(quantity: int) -> bool:
         price = buy_execution_price(
@@ -83,12 +98,13 @@ def max_entry_quantity(
             and value * stop_loss_pct <= portfolio_equity * risk_per_trade
         )
 
-    low = 0
-    high = upper
-    while low < high:
-        middle = (low + high + 1) // 2
-        if allowed(middle):
-            low = middle
+    low_steps = 0
+    high_steps = upper // increment
+    while low_steps < high_steps:
+        middle_steps = (low_steps + high_steps + 1) // 2
+        quantity = middle_steps * increment
+        if allowed(quantity):
+            low_steps = middle_steps
         else:
-            high = middle - 1
-    return low
+            high_steps = middle_steps - 1
+    return low_steps * increment

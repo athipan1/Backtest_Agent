@@ -97,6 +97,9 @@ jobs:
         run: python -m pytest -q
 
       - name: Run hourly backtest
+        env:
+          BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS: ${{ vars.BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS || '2.0' }}
+          BACKTEST_DEFAULT_QUANTITY_INCREMENT: ${{ vars.BACKTEST_DEFAULT_QUANTITY_INCREMENT || '1' }}
         run: python scripts/run_hourly_backtest.py
 
       - name: Upload backtest report

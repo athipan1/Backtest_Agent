@@ -177,7 +177,20 @@ def _load_payload(provider=None) -> dict:
     return payload
 
 
+def _nested_validation_required() -> bool:
+    return _bool_env("BACKTEST_WALK_FORWARD_GATE_REQUIRED", False) or _bool_env(
+        "BACKTEST_NESTED_SELECTION_ENABLED",
+        False,
+    )
+
+
 def main() -> None:
+    if _nested_validation_required():
+        from scripts.run_nested_hourly_backtest import main as nested_main
+
+        nested_main()
+        return
+
     payload = _load_payload()
     if len(payload["symbols"]) == 1:
         response = backtest_run_and_publish(

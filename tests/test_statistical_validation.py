@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import math
 
 import pytest
 
@@ -188,3 +189,21 @@ def test_bootstrap_evidence_is_deterministic_for_same_seed():
     )
 
     assert first.model_dump() == second.model_dump()
+
+
+def test_constant_positive_returns_remain_finite_and_json_serializable():
+    evidence = run_statistical_validation(
+        _result([0.001] * 60),
+        candidate_count=4,
+        periods_per_year=252,
+        criteria=StatisticalValidationCriteria(
+            min_trades=1,
+            bootstrap_simulations=100,
+        ),
+    )
+
+    assert evidence.periodic_sharpe_ratio is not None
+    assert math.isfinite(evidence.periodic_sharpe_ratio)
+    serialized = evidence.model_dump_json()
+    assert "Infinity" not in serialized
+    assert "NaN" not in serialized

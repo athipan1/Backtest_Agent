@@ -1,15 +1,19 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
+
 from app.models import BacktestMetrics
 from app.multi_strategy_walk_forward import (
     WalkForwardMultiStrategyRequest,
     WalkForwardStabilityCriteria,
     run_candidate_walk_forward_stability,
+    run_nested_walk_forward_stability,
 )
 
 
-def bars(count=500):
+def bars(count=630):
     start = datetime(2024, 1, 1, tzinfo=timezone.utc)
     rows = []
     price = 100.0
@@ -63,12 +67,13 @@ def metrics(**overrides):
     return BacktestMetrics(**payload)
 
 
-def request(count=500, **criteria):
+def request(count=630, candidates=None, **criteria):
     return WalkForwardMultiStrategyRequest(
         symbols=["AAPL"],
         initial_equity=100000,
         bars={"AAPL": bars(count)},
-        candidates=[
+        candidates=candidates
+        or [
             {
                 "strategy_id": "trend-test-v1",
                 "name": "Trend test",
@@ -82,6 +87,23 @@ def request(count=500, **criteria):
         slippage_bps=0,
         force_close_at_end=True,
     )
+
+
+def test_overlapping_test_windows_require_explicit_opt_in():
+    with pytest.raises(ValidationError, match="allow_overlapping_test_windows"):
+        WalkForwardStabilityCriteria(
+            train_bars=60,
+            test_bars=60,
+            step_bars=30,
+        )
+
+    criteria = WalkForwardStabilityCriteria(
+        train_bars=60,
+        test_bars=60,
+        step_bars=30,
+        allow_overlapping_test_windows=True,
+    )
+    assert criteria.step_bars < criteria.test_bars
 
 
 def test_walk_forward_requires_minimum_number_of_out_of_sample_windows():
@@ -116,40 +138,45 @@ def test_walk_forward_passes_stable_out_of_sample_results(monkeypatch):
     assert result.evaluated_windows == 4
     assert result.profitable_windows == 4
     assert result.profitable_window_rate == 1.0
+    assert result.train_eligible_window_rate == 1.0
     assert result.median_sharpe_ratio == 1.10
     assert result.median_profit_factor == 3.0
     assert result.worst_max_drawdown == -0.05
+    assert result.overlapping_test_windows is False
     assert result.passed is True
     assert all(result.gates.values())
 
 
 def test_walk_forward_rejects_strategy_that_only_works_in_one_window(monkeypatch):
     value = request()
+    test_outcomes = [
+        metrics(return_pct=0.08, sharpe_ratio=1.4, profit_factor=2.0),
+        metrics(
+            final_equity=98000,
+            net_profit=-2000,
+            return_pct=-0.02,
+            sharpe_ratio=-0.4,
+            profit_factor=0.7,
+        ),
+        metrics(
+            final_equity=97000,
+            net_profit=-3000,
+            return_pct=-0.03,
+            sharpe_ratio=-0.6,
+            profit_factor=0.6,
+        ),
+        metrics(
+            final_equity=99000,
+            net_profit=-1000,
+            return_pct=-0.01,
+            sharpe_ratio=-0.2,
+            profit_factor=0.8,
+        ),
+    ]
     outcomes = iter(
-        [
-            metrics(return_pct=0.08, sharpe_ratio=1.4, profit_factor=2.0),
-            metrics(
-                final_equity=98000,
-                net_profit=-2000,
-                return_pct=-0.02,
-                sharpe_ratio=-0.4,
-                profit_factor=0.7,
-            ),
-            metrics(
-                final_equity=97000,
-                net_profit=-3000,
-                return_pct=-0.03,
-                sharpe_ratio=-0.6,
-                profit_factor=0.6,
-            ),
-            metrics(
-                final_equity=99000,
-                net_profit=-1000,
-                return_pct=-0.01,
-                sharpe_ratio=-0.2,
-                profit_factor=0.8,
-            ),
-        ]
+        result
+        for test_result in test_outcomes
+        for result in (metrics(), test_result)
     )
     monkeypatch.setattr(
         "app.multi_strategy_walk_forward.run_backtest_with_risk",
@@ -170,7 +197,7 @@ def test_walk_forward_rejects_strategy_that_only_works_in_one_window(monkeypatch
     assert result.gates["median_profit_factor"] is False
 
 
-def test_walk_forward_windows_are_strictly_out_of_sample(monkeypatch):
+def test_walk_forward_train_and_test_windows_do_not_overlap(monkeypatch):
     value = request()
     observed = []
 
@@ -189,8 +216,87 @@ def test_walk_forward_windows_are_strictly_out_of_sample(monkeypatch):
         candidate=value.candidates[0],
     )
 
-    assert len(observed) == result.evaluated_windows == 4
+    assert len(observed) == result.evaluated_windows * 2 == 8
+    train_windows = observed[0::2]
+    test_windows = observed[1::2]
     assert all(length == 126 for _, _, length in observed)
-    assert observed[0][0] == value.bars["AAPL"][126].timestamp
-    assert observed[1][0] == value.bars["AAPL"][189].timestamp
-    assert observed[0][1] < observed[1][1]
+    assert train_windows[0][0] == value.bars["AAPL"][0].timestamp
+    assert test_windows[0][0] == value.bars["AAPL"][126].timestamp
+    assert train_windows[0][1] < test_windows[0][0]
+    assert test_windows[0][1] < test_windows[1][0]
+
+
+def test_nested_walk_forward_selects_on_train_then_tests_selected_candidate(
+    monkeypatch,
+):
+    candidates = [
+        {
+            "strategy_id": "trend-v1",
+            "name": "Trend",
+            "strategy": "trend_following",
+            "fast_window": 10,
+            "slow_window": 30,
+        },
+        {
+            "strategy_id": "mean-v1",
+            "name": "Mean",
+            "strategy": "mean_reversion",
+            "fast_window": 5,
+            "slow_window": 20,
+        },
+    ]
+    value = request(candidates=candidates)
+    selected_ids = ["trend-v1", "mean-v1", "trend-v1", "mean-v1"]
+    selections = iter(selected_ids)
+
+    def fake_train_selection(train_request):
+        strategy_id = next(selections)
+        candidate = next(
+            item
+            for item in train_request.candidates
+            if item.strategy_id == strategy_id
+        )
+        selected = SimpleNamespace(
+            strategy_id=strategy_id,
+            name=candidate.name,
+            score=1.0,
+            metrics=metrics(),
+            warnings=[],
+        )
+        return SimpleNamespace(best_eligible=selected, best_overall=selected)
+
+    tested = []
+
+    def fake_test(run_request):
+        tested.append(
+            (
+                run_request.strategy,
+                run_request.bars["AAPL"][0].timestamp,
+            )
+        )
+        return SimpleNamespace(metrics=metrics(), warnings=[])
+
+    monkeypatch.setattr(
+        "app.multi_strategy_walk_forward.run_multi_strategy_backtest",
+        fake_train_selection,
+    )
+    monkeypatch.setattr(
+        "app.multi_strategy_walk_forward.run_backtest_with_risk",
+        fake_test,
+    )
+
+    result = run_nested_walk_forward_stability(value)
+
+    assert result.selection_method == "nested_train_select_test_evaluate"
+    assert [window.selected_strategy_id for window in result.windows] == selected_ids
+    assert [strategy for strategy, _ in tested] == [
+        "trend_following",
+        "mean_reversion",
+        "trend_following",
+        "mean_reversion",
+    ]
+    assert tested[0][1] == value.bars["AAPL"][126].timestamp
+    assert tested[1][1] == value.bars["AAPL"][378 - 126].timestamp
+    assert result.selection_counts == {"mean-v1": 2, "trend-v1": 2}
+    assert result.latest_selected_strategy_id == "mean-v1"
+    assert result.latest_selection_eligible is True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -8,30 +9,17 @@ from typing import Any, Iterator, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class ExecutionRealismPolicy(BaseModel):
-    """Execution assumptions applied consistently across pricing and sizing."""
-
-    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
-
-    bid_ask_spread_bps: float = Field(default=0.0, ge=0, lt=10000)
-    quantity_increment: int = Field(default=1, ge=1, le=1_000_000)
-    signal_execution_delay_bars: Literal[1] = 1
-
-
-_CURRENT_POLICY: ContextVar[ExecutionRealismPolicy | None] = ContextVar(
-    "backtest_execution_policy",
-    default=None,
-)
-
-
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or not value.strip():
         return default
     try:
-        return float(value)
+        parsed = float(value)
     except ValueError as exc:
         raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    return parsed
 
 
 def _env_int(name: str, default: int) -> int:
@@ -44,18 +32,42 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer") from exc
 
 
-def default_execution_policy() -> ExecutionRealismPolicy:
-    return ExecutionRealismPolicy(
-        bid_ask_spread_bps=_env_float(
+class ExecutionRealismPolicy(BaseModel):
+    """Execution assumptions applied consistently across pricing and sizing."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        allow_inf_nan=False,
+        validate_default=True,
+    )
+
+    bid_ask_spread_bps: float = Field(
+        default_factory=lambda: _env_float(
             "BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS",
             0.0,
         ),
-        quantity_increment=_env_int(
+        ge=0,
+        lt=10000,
+    )
+    quantity_increment: int = Field(
+        default_factory=lambda: _env_int(
             "BACKTEST_DEFAULT_QUANTITY_INCREMENT",
             1,
         ),
-        signal_execution_delay_bars=1,
+        ge=1,
+        le=1_000_000,
     )
+    signal_execution_delay_bars: Literal[1] = 1
+
+
+_CURRENT_POLICY: ContextVar[ExecutionRealismPolicy | None] = ContextVar(
+    "backtest_execution_policy",
+    default=None,
+)
+
+
+def default_execution_policy() -> ExecutionRealismPolicy:
+    return ExecutionRealismPolicy()
 
 
 def resolve_execution_policy(request: Any | None = None) -> ExecutionRealismPolicy:

@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
+from fastapi.responses import PlainTextResponse
 
 from app.multi_strategy import router as multi_strategy_router
 from app.multi_strategy_walk_forward import router as multi_strategy_walk_forward_router
+from app.observability import METRICS, current_correlation_id
+from app.readiness import readiness_snapshot
 
 
 BACKTEST_AGENT_TYPE = "backtest-agent"
@@ -36,7 +39,7 @@ def contract_response(
         "version": BACKTEST_AGENT_VERSION,
         "schema_version": SCHEMA_VERSION,
         "timestamp": utc_timestamp(),
-        "correlation_id": None,
+        "correlation_id": current_correlation_id(),
         "data": data,
         "metadata": metadata or {},
         "error": error,
@@ -55,17 +58,28 @@ def version() -> Dict[str, Any]:
             "api_contract": "multi-agent-trading-api-contract",
         },
         metadata={
-            "required_operational_endpoints": ["/health", "/ready", "/version"],
+            "required_operational_endpoints": [
+                "/health",
+                "/ready",
+                "/version",
+                "/metrics",
+            ],
         },
     )
 
 
 @router.get("/ready")
-def ready() -> Dict[str, Any]:
+def ready(response: Response) -> Dict[str, Any]:
+    snapshot = readiness_snapshot()
+    is_ready = bool(snapshot["ready"])
+    if not is_ready:
+        response.status_code = 503
     return contract_response(
-        status="success",
+        status="success" if is_ready else "error",
         data={
-            "ready": True,
+            "ready": is_ready,
+            "environment": snapshot["environment"],
+            "publishing_required": snapshot["publishing_required"],
             "run_endpoint": "/backtest/run",
             "compare_endpoint": "/backtest/compare",
             "multi_strategy_endpoint": "/backtest/multi-strategy",
@@ -75,6 +89,7 @@ def ready() -> Dict[str, Any]:
             "walk_forward_endpoint": "/backtest/walk-forward",
             "robustness_endpoint": "/backtest/robustness",
             "report_endpoint": "/backtest/report",
+            "metrics_endpoint": "/metrics",
             "supported_strategies": [
                 "sma_crossover",
                 "trend_following",
@@ -106,6 +121,23 @@ def ready() -> Dict[str, Any]:
         },
         metadata={
             "contract_source": "backtest-agent-runtime-contract",
+            "readiness_checks": snapshot["checks"],
         },
-        confidence_score=1.0,
+        error=(
+            None
+            if is_ready
+            else {
+                "code": "service_not_ready",
+                "message": "One or more critical runtime checks failed.",
+            }
+        ),
+        confidence_score=1.0 if is_ready else 0.0,
+    )
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> PlainTextResponse:
+    return PlainTextResponse(
+        METRICS.render_prometheus(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
     )

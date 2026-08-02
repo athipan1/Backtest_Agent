@@ -86,6 +86,11 @@ def ready() -> Dict[str, Any]:
                 "exact_symbol_only": True,
                 "returns_best_eligible": True,
                 "safety_gated": True,
+                "statistical_gates": True,
+                "multiple_testing_adjustment": "bonferroni",
+                "probabilistic_sharpe": True,
+                "deflated_sharpe": True,
+                "bootstrap_confidence_interval": True,
             },
             "multi_strategy_walk_forward": {
                 "nested_train_selection": True,

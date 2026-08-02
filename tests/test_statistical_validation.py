@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.models import BacktestMetrics, BacktestRunResult, EquityPoint
 from app.statistical_validation import (
     StatisticalValidationCriteria,
@@ -63,9 +65,9 @@ def test_equity_returns_are_derived_from_chronological_curve():
     values = equity_returns(result)
 
     assert len(values) == 3
-    assert values[0] == 0.01
-    assert round(values[1], 6) == -0.005
-    assert round(values[2], 6) == 0.02
+    assert values[0] == pytest.approx(0.01)
+    assert values[1] == pytest.approx(-0.005)
+    assert values[2] == pytest.approx(0.02)
 
 
 def test_positive_repeatable_edge_passes_lenient_statistical_gates():

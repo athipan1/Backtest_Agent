@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
-import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,13 +12,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.data_provider import AlpacaMarketDataProvider, dataset_fingerprint
 from app.main import (
     BacktestBatchRunAndPublishRequest,
     BacktestRunAndPublishRequest,
     backtest_run_and_publish,
     backtest_run_and_publish_batch,
 )
-from app.data_provider import AlpacaMarketDataProvider, dataset_fingerprint
 from app.publisher import ENGINE_VERSION
 
 
@@ -206,7 +206,26 @@ def main() -> None:
                 encoding="utf-8",
             )
     print(json.dumps(output, indent=2, sort_keys=True))
-    if len(payload["symbols"]) > 1 and not response.data.all_succeeded:
+
+    publish_required = bool(payload.get("publish_to_database", True))
+    if len(payload["symbols"]) == 1:
+        if (
+            publish_required
+            and (
+                response.data is None
+                or not response.data.published
+            )
+        ):
+            publish_status = (
+                "missing_result"
+                if response.data is None
+                else response.data.publish_status
+            )
+            raise SystemExit(
+                "Single-symbol Database publish failed or was skipped: "
+                f"{publish_status}. See hourly report."
+            )
+    elif response.data is None or not response.data.all_succeeded:
         raise SystemExit("One or more symbol Backtests failed; see batch report.")
 
 

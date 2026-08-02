@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 from app import main as app_main
@@ -85,16 +87,103 @@ def test_batch_endpoint_publishes_one_exact_database_run_per_symbol(monkeypatch)
     assert body["data"]["published_count"] == 2
     assert body["data"]["published"] is True
     assert body["data"]["all_succeeded"] is True
-    assert [item["run_id"] for item in body["data"]["items"]] == [
-        "batch-1-aapl",
-        "batch-1-msft",
-    ]
+
+    run_ids = [item["run_id"] for item in body["data"]["items"]]
+    assert all(re.fullmatch(r"backtest-[0-9a-f]{24}", item) for item in run_ids)
+    assert len(set(run_ids)) == 2
+    assert [call["run_id"] for call in calls] == run_ids
     assert [call["request"].symbols for call in calls] == [["AAPL"], ["MSFT"]]
     assert [call["request"].initial_equity for call in calls] == [100000, 100000]
     assert [call["metadata"]["batch_symbol"] for call in calls] == [
         "AAPL",
         "MSFT",
     ]
+    assert all(
+        call["metadata"]["run_identity_scope"] == "exact_symbol"
+        for call in calls
+    )
+
+
+def test_exact_symbol_run_id_is_independent_of_peer_symbol_data(monkeypatch):
+    published_runs = []
+
+    def fake_publish_backtest_result(**kwargs):
+        symbol = kwargs["request"].symbols[0]
+        published_runs.append((symbol, kwargs["run_id"]))
+        return {
+            "status": "success",
+            "database_response": {"status": "success"},
+            "payload": {"run_id": kwargs["run_id"], "symbol": symbol},
+        }
+
+    monkeypatch.setattr(
+        app_main,
+        "publish_backtest_result",
+        fake_publish_backtest_result,
+    )
+
+    client.post("/backtest/run-and-publish-batch", json=_request())
+    first = dict(published_runs[-2:])
+
+    client.post(
+        "/backtest/run-and-publish-batch",
+        json=_request(
+            bars={
+                "AAPL": _bars(),
+                "MSFT": _bars(200),
+            }
+        ),
+    )
+    peer_changed = dict(published_runs[-2:])
+
+    client.post(
+        "/backtest/run-and-publish-batch",
+        json=_request(
+            bars={
+                "AAPL": _bars(1),
+                "MSFT": _bars(200),
+            }
+        ),
+    )
+    exact_symbol_changed = dict(published_runs[-2:])
+
+    assert first["AAPL"] == peer_changed["AAPL"]
+    assert first["MSFT"] != peer_changed["MSFT"]
+    assert peer_changed["AAPL"] != exact_symbol_changed["AAPL"]
+
+
+def test_single_symbol_publish_reports_error_when_database_skips(monkeypatch):
+    def fake_publish_backtest_result(**kwargs):
+        return {
+            "status": "skipped",
+            "database_response": {
+                "status": "skipped",
+                "reason": "DATABASE_AGENT_URL is not configured",
+            },
+            "payload": {"run_id": kwargs["run_id"]},
+        }
+
+    monkeypatch.setattr(
+        app_main,
+        "publish_backtest_result",
+        fake_publish_backtest_result,
+    )
+
+    payload = _request()
+    payload.update(
+        symbols=["AAPL"],
+        bars={"AAPL": _bars()},
+        run_id="single-run-1",
+    )
+    payload.pop("batch_id")
+    response = client.post("/backtest/run-and-publish", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["data"]["published"] is False
+    assert body["data"]["publish_status"] == "skipped"
+    assert "Database publish did not succeed" in body["error"]
 
 
 def test_batch_endpoint_reports_partial_failure_without_cross_symbol_fallback(monkeypatch):

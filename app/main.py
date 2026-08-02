@@ -21,9 +21,10 @@ from app.models import (
     WalkForwardRequest,
     WalkForwardResult,
 )
-from app.publisher import publish_backtest_result
+from app.publisher import ENGINE_VERSION, publish_backtest_result
 from app.robustness import run_robustness_analysis
 from app.risk_engine import run_backtest_with_risk as run_backtest
+from app.run_identity import deterministic_symbol_run_id
 from app.system_contract import router as system_contract_router
 from app.walk_forward import run_walk_forward_validation
 
@@ -165,14 +166,22 @@ def backtest_run_and_publish(request: BacktestRunAndPublishRequest) -> StandardA
         )
 
     publish_status = str(publish_report.get("status") or "success")
+    publish_succeeded = (
+        not request.publish_to_database or publish_status == "success"
+    )
     return StandardAgentResponse(
-        status="success",
+        status="success" if publish_succeeded else "error",
         data=BacktestRunAndPublishResult(
             result=result,
             published=request.publish_to_database and publish_status == "success",
             publish_status=publish_status,
             database_payload=publish_report.get("payload"),
             database_response=publish_report.get("database_response"),
+        ),
+        error=(
+            None
+            if publish_succeeded
+            else f"Database publish did not succeed: {publish_status}"
         ),
     )
 
@@ -196,17 +205,24 @@ def _single_symbol_batch_request(
     index: int,
     batch_size: int,
 ) -> BacktestRunAndPublishRequest:
+    symbol_run_id = deterministic_symbol_run_id(
+        request,
+        symbol=symbol,
+        timeframe=request.timeframe,
+        engine_version=ENGINE_VERSION,
+    )
     payload = request.model_dump(exclude={"batch_id"})
     payload.update(
         symbols=[symbol],
         bars={symbol: _bars_for_exact_symbol(request, symbol)},
-        run_id=f"{batch_id}-{symbol.lower()}",
+        run_id=symbol_run_id,
         metadata={
             **request.metadata,
             "batch_id": batch_id,
             "batch_symbol": symbol,
             "batch_index": index,
             "batch_size": batch_size,
+            "run_identity_scope": "exact_symbol",
         },
     )
     return BacktestRunAndPublishRequest(**payload)

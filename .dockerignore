@@ -1,6 +1,8 @@
 .git
 .github
 .pytest_cache
+.mypy_cache
+.ruff_cache
 __pycache__
 *.pyc
 *.pyo
@@ -10,4 +12,10 @@ __pycache__
 venv
 htmlcov
 .coverage
+coverage.xml
+reports
+tests
+docs
+scripts
+*.md
 .DS_Store

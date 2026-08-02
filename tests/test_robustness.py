@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -18,7 +18,8 @@ def bars() -> list[PriceBar]:
     closes = [100, 103, 106, 99, 96, 102, 108, 101, 95, 104, 110, 100]
     return [
         PriceBar(
-            timestamp=datetime(2026, 1, 1) + timedelta(days=index),
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc)
+            + timedelta(days=index),
             open=close,
             high=close + 2,
             low=close - 2,

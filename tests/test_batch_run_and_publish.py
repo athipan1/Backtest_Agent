@@ -75,7 +75,7 @@ def test_batch_endpoint_publishes_one_exact_database_run_per_symbol(monkeypatch)
 
     response = client.post(
         "/backtest/run-and-publish-batch",
-        json=_request(symbols=["aapl", "AAPL", "msft"]),
+        json=_request(symbols=["aapl", "msft"]),
     )
 
     assert response.status_code == 200

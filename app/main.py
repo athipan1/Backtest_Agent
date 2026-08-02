@@ -1,35 +1,42 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
+from app.api_contracts import (
+    StrictBacktestCompareRequest,
+    StrictBacktestRobustnessRequest,
+    StrictBacktestRunRequest,
+    StrictPerformanceReportRequest,
+    StrictWalkForwardRequest,
+)
 from app.compare import compare_strategies
 from app.models import (
-    BacktestCompareRequest,
     BacktestCompareResult,
-    BacktestRobustnessRequest,
     BacktestRobustnessResult,
     BacktestRunRequest,
     BacktestRunResult,
     HealthData,
     PerformanceReport,
-    PerformanceReportRequest,
     StandardAgentResponse,
-    WalkForwardRequest,
     WalkForwardResult,
 )
 from app.publisher import ENGINE_VERSION, publish_backtest_result
 from app.robustness import run_robustness_analysis
 from app.risk_engine import run_backtest_with_risk as run_backtest
 from app.run_identity import deterministic_symbol_run_id
+from app.security import require_backtest_api_key
 from app.system_contract import router as system_contract_router
 from app.walk_forward import run_walk_forward_validation
 
 
-class BacktestRunAndPublishRequest(BacktestRunRequest):
+class BacktestRunAndPublishRequest(StrictBacktestRunRequest):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     account_id: str = "1"
     run_id: Optional[str] = None
     skill_id: Optional[str] = None
@@ -48,16 +55,9 @@ class BacktestRunAndPublishResult(BaseModel):
 
 
 class BacktestBatchRunAndPublishRequest(BacktestRunAndPublishRequest):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     symbols: List[str] = Field(min_length=1, max_length=25)
     batch_id: Optional[str] = None
-
-    @field_validator("symbols", mode="before")
-    @classmethod
-    def normalize_batch_symbols(cls, value):
-        normalized = _normalized_symbols(value or [])
-        if not normalized:
-            raise ValueError("at least one non-empty symbol is required")
-        return normalized
 
 
 class BacktestBatchItemResult(BaseModel):
@@ -92,7 +92,39 @@ app = FastAPI(
 app.include_router(system_contract_router)
 
 
-def build_report(request: PerformanceReportRequest) -> PerformanceReport:
+def _max_request_bytes() -> int:
+    raw = os.getenv("BACKTEST_MAX_REQUEST_BYTES", "5242880")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 5 * 1024 * 1024
+    return max(1024, value)
+
+
+@app.middleware("http")
+async def reject_oversized_requests(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH"}:
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                request_bytes = int(content_length)
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "error": "invalid Content-Length"},
+                )
+            if request_bytes > _max_request_bytes():
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "status": "error",
+                        "error": "request payload exceeds configured limit",
+                    },
+                )
+    return await call_next(request)
+
+
+def build_report(request: StrictPerformanceReportRequest) -> PerformanceReport:
     metrics = request.result.metrics
     gates = {
         "trade_count": metrics.trade_count >= request.min_trades,
@@ -119,17 +151,24 @@ def health() -> StandardAgentResponse[HealthData]:
     return StandardAgentResponse(status="success", data=HealthData())
 
 
-@app.post("/backtest/run", response_model=StandardAgentResponse[BacktestRunResult])
-def backtest_run(request: BacktestRunRequest) -> StandardAgentResponse[BacktestRunResult]:
+@app.post(
+    "/backtest/run",
+    response_model=StandardAgentResponse[BacktestRunResult],
+    dependencies=[Depends(require_backtest_api_key)],
+)
+def backtest_run(
+    request: StrictBacktestRunRequest,
+) -> StandardAgentResponse[BacktestRunResult]:
     return StandardAgentResponse(status="success", data=run_backtest(request))
 
 
 @app.post(
     "/backtest/robustness",
     response_model=StandardAgentResponse[BacktestRobustnessResult],
+    dependencies=[Depends(require_backtest_api_key)],
 )
 def backtest_robustness(
-    request: BacktestRobustnessRequest,
+    request: StrictBacktestRobustnessRequest,
 ) -> StandardAgentResponse[BacktestRobustnessResult]:
     return StandardAgentResponse(
         status="success",
@@ -137,8 +176,14 @@ def backtest_robustness(
     )
 
 
-@app.post("/backtest/run-and-publish", response_model=StandardAgentResponse[BacktestRunAndPublishResult])
-def backtest_run_and_publish(request: BacktestRunAndPublishRequest) -> StandardAgentResponse[BacktestRunAndPublishResult]:
+@app.post(
+    "/backtest/run-and-publish",
+    response_model=StandardAgentResponse[BacktestRunAndPublishResult],
+    dependencies=[Depends(require_backtest_api_key)],
+)
+def backtest_run_and_publish(
+    request: BacktestRunAndPublishRequest,
+) -> StandardAgentResponse[BacktestRunAndPublishResult]:
     if len(_normalized_symbols(request.symbols)) != 1:
         raise HTTPException(
             status_code=422,
@@ -231,6 +276,7 @@ def _single_symbol_batch_request(
 @app.post(
     "/backtest/run-and-publish-batch",
     response_model=StandardAgentResponse[BacktestBatchRunAndPublishResult],
+    dependencies=[Depends(require_backtest_api_key)],
 )
 def backtest_run_and_publish_batch(
     request: BacktestBatchRunAndPublishRequest,
@@ -315,18 +361,36 @@ def backtest_run_and_publish_batch(
     )
 
 
-@app.post("/backtest/compare", response_model=StandardAgentResponse[BacktestCompareResult])
-def backtest_compare(request: BacktestCompareRequest) -> StandardAgentResponse[BacktestCompareResult]:
+@app.post(
+    "/backtest/compare",
+    response_model=StandardAgentResponse[BacktestCompareResult],
+    dependencies=[Depends(require_backtest_api_key)],
+)
+def backtest_compare(
+    request: StrictBacktestCompareRequest,
+) -> StandardAgentResponse[BacktestCompareResult]:
     return StandardAgentResponse(status="success", data=compare_strategies(request))
 
 
-@app.post("/backtest/walk-forward", response_model=StandardAgentResponse[WalkForwardResult])
-def backtest_walk_forward(request: WalkForwardRequest) -> StandardAgentResponse[WalkForwardResult]:
+@app.post(
+    "/backtest/walk-forward",
+    response_model=StandardAgentResponse[WalkForwardResult],
+    dependencies=[Depends(require_backtest_api_key)],
+)
+def backtest_walk_forward(
+    request: StrictWalkForwardRequest,
+) -> StandardAgentResponse[WalkForwardResult]:
     return StandardAgentResponse(status="success", data=run_walk_forward_validation(request))
 
 
-@app.post("/backtest/report", response_model=StandardAgentResponse[PerformanceReport])
-def backtest_report(request: PerformanceReportRequest) -> StandardAgentResponse[PerformanceReport]:
+@app.post(
+    "/backtest/report",
+    response_model=StandardAgentResponse[PerformanceReport],
+    dependencies=[Depends(require_backtest_api_key)],
+)
+def backtest_report(
+    request: StrictPerformanceReportRequest,
+) -> StandardAgentResponse[PerformanceReport]:
     return StandardAgentResponse(status="success", data=build_report(request))
 
 

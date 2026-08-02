@@ -88,12 +88,15 @@ def ready() -> Dict[str, Any]:
                 "safety_gated": True,
             },
             "multi_strategy_walk_forward": {
-                "rolling_out_of_sample": True,
+                "nested_train_selection": True,
+                "untouched_future_test_windows": True,
                 "default_train_bars": 126,
                 "default_test_bars": 126,
-                "default_step_bars": 63,
+                "default_step_bars": 126,
+                "default_embargo_bars": 0,
                 "default_min_windows": 4,
-                "requires_full_period_and_walk_forward": True,
+                "overlapping_test_windows_by_default": False,
+                "full_period_metrics_are_diagnostic_only": True,
             },
         },
         metadata={

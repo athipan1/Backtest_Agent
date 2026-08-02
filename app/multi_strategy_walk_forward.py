@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections import Counter
 from statistics import median
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field, model_validator
 
 from app.models import BacktestMetrics, BacktestRunResult, StandardAgentResponse, StrategyName
 from app.multi_strategy import (
@@ -16,24 +17,40 @@ from app.multi_strategy import (
     run_multi_strategy_backtest,
 )
 from app.risk_engine import run_backtest_with_risk
+from app.security import require_backtest_api_key
 
 
 router = APIRouter()
 
 
 class WalkForwardStabilityCriteria(BaseModel):
-    """Conservative rolling out-of-sample gates for one fixed strategy."""
+    """Conservative nested out-of-sample gates."""
 
     train_bars: int = Field(default=126, ge=20)
     test_bars: int = Field(default=126, ge=20)
-    step_bars: int = Field(default=63, ge=1)
+    step_bars: int = Field(default=126, ge=1)
+    embargo_bars: int = Field(default=0, ge=0)
+    allow_overlapping_test_windows: bool = False
     min_windows: int = Field(default=4, ge=1)
     min_window_trades: int = Field(default=1, ge=0)
+    min_train_eligible_window_rate: float = Field(default=0.50, ge=0, le=1)
     min_profitable_window_rate: float = Field(default=0.60, ge=0, le=1)
     min_median_sharpe_ratio: float = 0.70
     min_median_profit_factor: float = Field(default=1.10, ge=0)
     max_drawdown_floor: float = Field(default=-0.20, ge=-1, le=0)
     max_kill_switch_events: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_window_independence(self) -> "WalkForwardStabilityCriteria":
+        if (
+            not self.allow_overlapping_test_windows
+            and self.step_bars < self.test_bars
+        ):
+            raise ValueError(
+                "step_bars must be greater than or equal to test_bars unless "
+                "allow_overlapping_test_windows is true"
+            )
+        return self
 
 
 class WalkForwardWindowResult(BaseModel):
@@ -44,6 +61,11 @@ class WalkForwardWindowResult(BaseModel):
     test_end: str
     train_bars: int
     test_bars: int
+    selected_strategy_id: str
+    selected_strategy_name: str
+    train_selection_eligible: bool
+    train_selection_score: float
+    train_metrics: BacktestMetrics
     profitable: bool
     metrics: BacktestMetrics
     warnings: List[str] = Field(default_factory=list)
@@ -51,10 +73,16 @@ class WalkForwardWindowResult(BaseModel):
 
 class WalkForwardStabilityResult(BaseModel):
     status: Literal["completed", "insufficient_history"]
+    selection_method: Literal[
+        "fixed_candidate_oos",
+        "nested_train_select_test_evaluate",
+    ] = "fixed_candidate_oos"
     passed: bool
     stability_score: float
     available_bars: int
     evaluated_windows: int
+    train_eligible_windows: int = 0
+    train_eligible_window_rate: float = 0.0
     profitable_windows: int
     profitable_window_rate: float
     median_annualized_return: Optional[float] = None
@@ -62,6 +90,11 @@ class WalkForwardStabilityResult(BaseModel):
     median_profit_factor: Optional[float] = None
     worst_max_drawdown: Optional[float] = None
     total_kill_switch_events: int = 0
+    overlapping_test_windows: bool = False
+    embargo_bars: int = 0
+    latest_selected_strategy_id: Optional[str] = None
+    latest_selection_eligible: bool = False
+    selection_counts: Dict[str, int] = Field(default_factory=dict)
     gates: Dict[str, bool] = Field(default_factory=dict)
     reasons: List[str] = Field(default_factory=list)
     windows: List[WalkForwardWindowResult] = Field(default_factory=list)
@@ -96,8 +129,12 @@ class WalkForwardMultiStrategyResult(BaseModel):
     symbol: str
     candidate_source: Literal["balanced_v1", "provided"]
     selection_status: Literal["eligible_strategy_found", "no_eligible_strategy"]
+    selection_method: Literal["nested_train_select_test_evaluate"] = (
+        "nested_train_select_test_evaluate"
+    )
     selection_criteria: Any
     walk_forward_criteria: WalkForwardStabilityCriteria
+    nested_walk_forward: WalkForwardStabilityResult
     evaluated_count: int
     eligible_count: int
     ranked_results: List[WalkForwardMultiStrategyResultItem]
@@ -113,6 +150,23 @@ def _bars_for_symbol(request: WalkForwardMultiStrategyRequest) -> list[Any]:
         if key.upper() == symbol:
             return sorted(bars, key=lambda bar: bar.timestamp)
     return []
+
+
+def _window_slices(
+    request: WalkForwardMultiStrategyRequest,
+) -> list[tuple[list[Any], list[Any]]]:
+    source = _bars_for_symbol(request)
+    criteria = request.walk_forward_criteria
+    windows: list[tuple[list[Any], list[Any]]] = []
+    test_start = criteria.train_bars + criteria.embargo_bars
+    while test_start + criteria.test_bars <= len(source):
+        train_end = test_start - criteria.embargo_bars
+        train_start = train_end - criteria.train_bars
+        train_slice = source[train_start:train_end]
+        test_slice = source[test_start : test_start + criteria.test_bars]
+        windows.append((train_slice, test_slice))
+        test_start += criteria.step_bars
+    return windows
 
 
 def _profit_factor_for_stability(metrics: BacktestMetrics) -> float:
@@ -134,12 +188,21 @@ def _stability_score(
     *,
     criteria: WalkForwardStabilityCriteria,
     evaluated_windows: int,
+    train_eligible_window_rate: float,
     profitable_window_rate: float,
     median_sharpe_ratio: Optional[float],
     median_profit_factor: Optional[float],
     worst_max_drawdown: Optional[float],
 ) -> float:
     window_component = min(evaluated_windows / criteria.min_windows, 1.0)
+    train_component = (
+        1.0
+        if criteria.min_train_eligible_window_rate == 0
+        else min(
+            train_eligible_window_rate / criteria.min_train_eligible_window_rate,
+            1.0,
+        )
+    )
     profitable_component = (
         1.0
         if criteria.min_profitable_window_rate == 0
@@ -168,62 +231,36 @@ def _stability_score(
     return round(
         (
             window_component
+            + train_component
             + profitable_component
             + sharpe_component
             + profit_factor_component
             + drawdown_component
         )
-        / 5.0,
+        / 6.0,
         6,
     )
 
 
-def run_candidate_walk_forward_stability(
+def _summarize_windows(
     *,
     request: WalkForwardMultiStrategyRequest,
-    candidate: MultiStrategyCandidate,
+    windows: List[WalkForwardWindowResult],
+    selection_method: Literal[
+        "fixed_candidate_oos",
+        "nested_train_select_test_evaluate",
+    ],
 ) -> WalkForwardStabilityResult:
-    symbol = request.symbols[0].upper()
-    source = _bars_for_symbol(request)
     criteria = request.walk_forward_criteria
-    windows: List[WalkForwardWindowResult] = []
-
-    test_start = criteria.train_bars
-    window_number = 1
-    while test_start + criteria.test_bars <= len(source):
-        train_start = max(0, test_start - criteria.train_bars)
-        train_slice = source[train_start:test_start]
-        test_slice = source[test_start : test_start + criteria.test_bars]
-        run_request = build_run_request(candidate, request).model_copy(
-            deep=True,
-            update={
-                "bars": {symbol: test_slice},
-                "force_close_at_end": True,
-            },
-        )
-        result = run_backtest_with_risk(run_request)
-        profitable = (
-            result.metrics.trade_count >= criteria.min_window_trades
-            and result.metrics.return_pct > 0
-        )
-        windows.append(
-            WalkForwardWindowResult(
-                window=window_number,
-                train_start=train_slice[0].timestamp.isoformat(),
-                train_end=train_slice[-1].timestamp.isoformat(),
-                test_start=test_slice[0].timestamp.isoformat(),
-                test_end=test_slice[-1].timestamp.isoformat(),
-                train_bars=len(train_slice),
-                test_bars=len(test_slice),
-                profitable=profitable,
-                metrics=result.metrics,
-                warnings=result.warnings,
-            )
-        )
-        window_number += 1
-        test_start += criteria.step_bars
-
     evaluated_windows = len(windows)
+    train_eligible_windows = sum(
+        1 for window in windows if window.train_selection_eligible
+    )
+    train_eligible_window_rate = (
+        0.0
+        if evaluated_windows == 0
+        else train_eligible_windows / evaluated_windows
+    )
     profitable_windows = sum(1 for window in windows if window.profitable)
     profitable_window_rate = (
         0.0
@@ -261,6 +298,10 @@ def run_candidate_walk_forward_stability(
     )
     gates = {
         "window_count": evaluated_windows >= criteria.min_windows,
+        "train_eligible_window_rate": (
+            train_eligible_window_rate
+            >= criteria.min_train_eligible_window_rate
+        ),
         "profitable_window_rate": (
             profitable_window_rate >= criteria.min_profitable_window_rate
         ),
@@ -282,6 +323,7 @@ def run_candidate_walk_forward_stability(
     }
     observations = {
         "window_count": evaluated_windows,
+        "train_eligible_window_rate": round(train_eligible_window_rate, 6),
         "profitable_window_rate": round(profitable_window_rate, 6),
         "median_sharpe_ratio": median_sharpe_ratio,
         "median_profit_factor": median_profit_factor,
@@ -298,19 +340,25 @@ def run_candidate_walk_forward_stability(
         if evaluated_windows >= criteria.min_windows
         else "insufficient_history"
     )
+    counts = Counter(window.selected_strategy_id for window in windows)
+    latest = windows[-1] if windows else None
     return WalkForwardStabilityResult(
         status=status,
+        selection_method=selection_method,
         passed=all(gates.values()),
         stability_score=_stability_score(
             criteria=criteria,
             evaluated_windows=evaluated_windows,
+            train_eligible_window_rate=train_eligible_window_rate,
             profitable_window_rate=profitable_window_rate,
             median_sharpe_ratio=median_sharpe_ratio,
             median_profit_factor=median_profit_factor,
             worst_max_drawdown=worst_max_drawdown,
         ),
-        available_bars=len(source),
+        available_bars=len(_bars_for_symbol(request)),
         evaluated_windows=evaluated_windows,
+        train_eligible_windows=train_eligible_windows,
+        train_eligible_window_rate=round(train_eligible_window_rate, 6),
         profitable_windows=profitable_windows,
         profitable_window_rate=round(profitable_window_rate, 6),
         median_annualized_return=median_annualized_return,
@@ -318,9 +366,81 @@ def run_candidate_walk_forward_stability(
         median_profit_factor=median_profit_factor,
         worst_max_drawdown=worst_max_drawdown,
         total_kill_switch_events=total_kill_switch_events,
+        overlapping_test_windows=criteria.step_bars < criteria.test_bars,
+        embargo_bars=criteria.embargo_bars,
+        latest_selected_strategy_id=(
+            latest.selected_strategy_id if latest is not None else None
+        ),
+        latest_selection_eligible=(
+            latest.train_selection_eligible if latest is not None else False
+        ),
+        selection_counts=dict(sorted(counts.items())),
         gates=gates,
         reasons=reasons,
         windows=windows,
+    )
+
+
+def run_candidate_walk_forward_stability(
+    *,
+    request: WalkForwardMultiStrategyRequest,
+    candidate: MultiStrategyCandidate,
+) -> WalkForwardStabilityResult:
+    symbol = request.symbols[0].upper()
+    strategy_id = resolve_strategy_id(candidate, request)
+    windows: List[WalkForwardWindowResult] = []
+
+    for window_number, (train_slice, test_slice) in enumerate(
+        _window_slices(request),
+        start=1,
+    ):
+        train_request = build_run_request(candidate, request).model_copy(
+            deep=True,
+            update={
+                "bars": {symbol: train_slice},
+                "force_close_at_end": True,
+            },
+        )
+        test_request = build_run_request(candidate, request).model_copy(
+            deep=True,
+            update={
+                "bars": {symbol: test_slice},
+                "force_close_at_end": True,
+            },
+        )
+        train_result = run_backtest_with_risk(train_request)
+        test_result = run_backtest_with_risk(test_request)
+        profitable = (
+            test_result.metrics.trade_count
+            >= request.walk_forward_criteria.min_window_trades
+            and test_result.metrics.return_pct > 0
+        )
+        windows.append(
+            WalkForwardWindowResult(
+                window=window_number,
+                train_start=train_slice[0].timestamp.isoformat(),
+                train_end=train_slice[-1].timestamp.isoformat(),
+                test_start=test_slice[0].timestamp.isoformat(),
+                test_end=test_slice[-1].timestamp.isoformat(),
+                train_bars=len(train_slice),
+                test_bars=len(test_slice),
+                selected_strategy_id=strategy_id,
+                selected_strategy_name=candidate.name,
+                train_selection_eligible=True,
+                train_selection_score=0.0,
+                train_metrics=train_result.metrics,
+                profitable=profitable,
+                metrics=test_result.metrics,
+                warnings=list(
+                    dict.fromkeys(train_result.warnings + test_result.warnings)
+                ),
+            )
+        )
+
+    return _summarize_windows(
+        request=request,
+        windows=windows,
+        selection_method="fixed_candidate_oos",
     )
 
 
@@ -333,25 +453,110 @@ def _candidate_by_strategy_id(
     }
 
 
+def run_nested_walk_forward_stability(
+    request: WalkForwardMultiStrategyRequest,
+) -> WalkForwardStabilityResult:
+    """Select on each train slice, then evaluate only on its future test slice."""
+
+    symbol = request.symbols[0].upper()
+    candidates = _candidate_by_strategy_id(request)
+    windows: List[WalkForwardWindowResult] = []
+
+    for window_number, (train_slice, test_slice) in enumerate(
+        _window_slices(request),
+        start=1,
+    ):
+        train_request = request.model_copy(
+            deep=True,
+            update={
+                "bars": {symbol: train_slice},
+                "force_close_at_end": True,
+            },
+        )
+        train_selection = run_multi_strategy_backtest(train_request)
+        selected_item = (
+            train_selection.best_eligible or train_selection.best_overall
+        )
+        if selected_item is None:
+            continue
+        candidate = candidates[selected_item.strategy_id]
+        test_request = build_run_request(candidate, request).model_copy(
+            deep=True,
+            update={
+                "bars": {symbol: test_slice},
+                "force_close_at_end": True,
+            },
+        )
+        test_result = run_backtest_with_risk(test_request)
+        profitable = (
+            test_result.metrics.trade_count
+            >= request.walk_forward_criteria.min_window_trades
+            and test_result.metrics.return_pct > 0
+        )
+        windows.append(
+            WalkForwardWindowResult(
+                window=window_number,
+                train_start=train_slice[0].timestamp.isoformat(),
+                train_end=train_slice[-1].timestamp.isoformat(),
+                test_start=test_slice[0].timestamp.isoformat(),
+                test_end=test_slice[-1].timestamp.isoformat(),
+                train_bars=len(train_slice),
+                test_bars=len(test_slice),
+                selected_strategy_id=selected_item.strategy_id,
+                selected_strategy_name=selected_item.name,
+                train_selection_eligible=(
+                    train_selection.best_eligible is not None
+                ),
+                train_selection_score=selected_item.score,
+                train_metrics=selected_item.metrics,
+                profitable=profitable,
+                metrics=test_result.metrics,
+                warnings=list(
+                    dict.fromkeys(
+                        selected_item.warnings + test_result.warnings
+                    )
+                ),
+            )
+        )
+
+    return _summarize_windows(
+        request=request,
+        windows=windows,
+        selection_method="nested_train_select_test_evaluate",
+    )
+
+
 def _walk_forward_item(
     *,
     base_item: MultiStrategyResultItem,
     stability: WalkForwardStabilityResult,
+    promotion_eligible: bool,
+    nested: WalkForwardStabilityResult,
 ) -> WalkForwardMultiStrategyResultItem:
     gates = {
         **{
-            f"full_period_{name}": passed
+            f"full_period_diagnostic_{name}": passed
             for name, passed in base_item.gates.items()
         },
         **{
-            f"walk_forward_{name}": passed
+            f"candidate_oos_{name}": passed
             for name, passed in stability.gates.items()
         },
+        **{
+            f"nested_oos_{name}": passed
+            for name, passed in nested.gates.items()
+        },
     }
-    reasons = list(base_item.disqualification_reasons) + stability.reasons
+    reasons = list(stability.reasons)
+    if not promotion_eligible:
+        reasons.append("not selected by the latest nested training window")
     components = dict(base_item.score_components)
-    components["walk_forward_stability"] = round(
-        0.15 * stability.stability_score,
+    components["candidate_oos_stability"] = round(
+        0.10 * stability.stability_score,
+        6,
+    )
+    components["nested_oos_stability"] = round(
+        0.20 * nested.stability_score,
         6,
     )
     return WalkForwardMultiStrategyResultItem(
@@ -363,9 +568,9 @@ def _walk_forward_item(
         slow_window=base_item.slow_window,
         effective_parameters=base_item.effective_parameters,
         full_period_eligible=base_item.eligible,
-        eligible=base_item.eligible and stability.passed,
+        eligible=promotion_eligible,
         gates=gates,
-        disqualification_reasons=reasons,
+        disqualification_reasons=list(dict.fromkeys(reasons)),
         score=round(sum(components.values()), 6),
         score_components=components,
         metrics=base_item.metrics,
@@ -374,11 +579,25 @@ def _walk_forward_item(
     )
 
 
+def _latest_training_slice(
+    request: WalkForwardMultiStrategyRequest,
+) -> list[Any]:
+    windows = _window_slices(request)
+    return windows[-1][0] if windows else []
+
+
 def run_walk_forward_multi_strategy_backtest(
     request: WalkForwardMultiStrategyRequest,
 ) -> WalkForwardMultiStrategyResult:
     base_result = run_multi_strategy_backtest(request)
     candidates = _candidate_by_strategy_id(request)
+    nested = run_nested_walk_forward_stability(request)
+    selected_strategy_id = (
+        nested.latest_selected_strategy_id
+        if nested.passed and nested.latest_selection_eligible
+        else None
+    )
+
     items = [
         _walk_forward_item(
             base_item=base_item,
@@ -386,6 +605,10 @@ def run_walk_forward_multi_strategy_backtest(
                 request=request,
                 candidate=candidates[base_item.strategy_id],
             ),
+            promotion_eligible=(
+                base_item.strategy_id == selected_strategy_id
+            ),
+            nested=nested,
         )
         for base_item in base_result.ranked_results
     ]
@@ -408,15 +631,28 @@ def run_walk_forward_multi_strategy_backtest(
     selected_result = None
     if best_eligible is not None:
         selected_candidate = candidates[best_eligible.strategy_id]
-        selected_result = run_backtest_with_risk(
-            build_run_request(selected_candidate, request)
-        )
+        latest_train = _latest_training_slice(request)
+        symbol = request.symbols[0].upper()
+        if latest_train:
+            selected_result = run_backtest_with_risk(
+                build_run_request(selected_candidate, request).model_copy(
+                    deep=True,
+                    update={
+                        "bars": {symbol: latest_train},
+                        "force_close_at_end": True,
+                    },
+                )
+            )
 
     warnings = list(base_result.warnings)
+    warnings.append(
+        "Full-period metrics are diagnostic only; promotion is determined by "
+        "nested train-selection and untouched future test windows."
+    )
     if best_eligible is None:
         warnings.append(
-            "No strategy passed both full-period and rolling out-of-sample "
-            "walk-forward gates; do not promote this symbol to Risk or Execution."
+            "No strategy passed nested out-of-sample gates and the latest "
+            "training-window eligibility check; do not promote this symbol."
         )
 
     return WalkForwardMultiStrategyResult(
@@ -429,6 +665,7 @@ def run_walk_forward_multi_strategy_backtest(
         ),
         selection_criteria=base_result.selection_criteria,
         walk_forward_criteria=request.walk_forward_criteria,
+        nested_walk_forward=nested,
         evaluated_count=len(ranked),
         eligible_count=len(eligible),
         ranked_results=ranked,
@@ -442,6 +679,7 @@ def run_walk_forward_multi_strategy_backtest(
 @router.post(
     "/backtest/multi-strategy/walk-forward",
     response_model=StandardAgentResponse[WalkForwardMultiStrategyResult],
+    dependencies=[Depends(require_backtest_api_key)],
 )
 def backtest_multi_strategy_walk_forward(
     request: WalkForwardMultiStrategyRequest,

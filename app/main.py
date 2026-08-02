@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
@@ -25,6 +26,15 @@ from app.models import (
     PerformanceReport,
     StandardAgentResponse,
     WalkForwardResult,
+)
+from app.observability import (
+    METRICS,
+    current_correlation_id,
+    emit_request_log,
+    reset_correlation_id,
+    resolve_correlation_id,
+    route_template,
+    set_correlation_id,
 )
 from app.publisher import ENGINE_VERSION, publish_backtest_result
 from app.robustness import run_robustness_analysis
@@ -101,27 +111,70 @@ def _max_request_bytes() -> int:
     return max(1024, value)
 
 
+def _request_limit_response(request: Request) -> JSONResponse | None:
+    if request.method not in {"POST", "PUT", "PATCH"}:
+        return None
+    content_length = request.headers.get("content-length")
+    if content_length is None:
+        return None
+    try:
+        request_bytes = int(content_length)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "error": "invalid Content-Length"},
+        )
+    if request_bytes > _max_request_bytes():
+        return JSONResponse(
+            status_code=413,
+            content={
+                "status": "error",
+                "error": "request payload exceeds configured limit",
+            },
+        )
+    return None
+
+
 @app.middleware("http")
-async def reject_oversized_requests(request: Request, call_next):
-    if request.method in {"POST", "PUT", "PATCH"}:
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                request_bytes = int(content_length)
-            except ValueError:
-                return JSONResponse(
-                    status_code=400,
-                    content={"status": "error", "error": "invalid Content-Length"},
-                )
-            if request_bytes > _max_request_bytes():
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "status": "error",
-                        "error": "request payload exceeds configured limit",
-                    },
-                )
-    return await call_next(request)
+async def observe_and_limit_requests(request: Request, call_next):
+    correlation_id = resolve_correlation_id(
+        request.headers.get("X-Correlation-ID")
+    )
+    token = set_correlation_id(correlation_id)
+    started = time.perf_counter()
+    status_code = 500
+    unhandled_error = False
+    error_type: str | None = None
+    try:
+        response = _request_limit_response(request)
+        if response is None:
+            response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+    except Exception as exc:
+        unhandled_error = True
+        error_type = type(exc).__name__
+        raise
+    finally:
+        duration_seconds = time.perf_counter() - started
+        path = route_template(request.scope, request.url.path)
+        METRICS.observe_request(
+            method=request.method,
+            path=path,
+            status_code=status_code,
+            duration_seconds=duration_seconds,
+            unhandled_error=unhandled_error,
+        )
+        emit_request_log(
+            correlation_id=correlation_id,
+            method=request.method,
+            path=path,
+            status_code=status_code,
+            duration_seconds=duration_seconds,
+            error_type=error_type,
+        )
+        reset_correlation_id(token)
 
 
 def build_report(request: StrictPerformanceReportRequest) -> PerformanceReport:
@@ -208,6 +261,7 @@ def backtest_run_and_publish(
             strategy_id=request.strategy_id,
             timeframe=request.timeframe,
             metadata=request.metadata,
+            correlation_id=current_correlation_id(),
         )
 
     publish_status = str(publish_report.get("status") or "success")

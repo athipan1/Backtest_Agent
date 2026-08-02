@@ -81,7 +81,9 @@ jobs:
             app/execution.py \
             app/execution_policy.py \
             app/run_identity.py \
-            app/statistical_validation.py
+            app/statistical_validation.py \
+            app/observability.py \
+            app/readiness.py
 
       - name: Bandit application scan
         run: python -m bandit -q -r app -ll

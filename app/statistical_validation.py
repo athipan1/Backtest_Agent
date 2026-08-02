@@ -12,6 +12,7 @@ from app.models import BacktestRunResult
 
 _NORMAL = NormalDist()
 _EULER_MASCHERONI = 0.5772156649015329
+_MAX_ABS_PERIODIC_SHARPE = 10.0
 
 
 class StatisticalValidationCriteria(BaseModel):
@@ -167,6 +168,19 @@ def _bootstrap_annualized_mean_interval(
     return samples[lower_index], samples[upper_index]
 
 
+def _finite_periodic_sharpe(average: float, sigma: float) -> float:
+    if sigma <= 0:
+        if average > 0:
+            return _MAX_ABS_PERIODIC_SHARPE
+        if average < 0:
+            return -_MAX_ABS_PERIODIC_SHARPE
+        return 0.0
+    return max(
+        -_MAX_ABS_PERIODIC_SHARPE,
+        min(_MAX_ABS_PERIODIC_SHARPE, average / sigma),
+    )
+
+
 def run_statistical_validation(
     result: BacktestRunResult,
     *,
@@ -217,13 +231,12 @@ def run_statistical_validation(
     annualized_mean = average * periods_per_year
     skewness = _sample_skewness(returns, average, sigma)
     kurtosis = _sample_kurtosis(returns, average, sigma)
+    periodic_sharpe = _finite_periodic_sharpe(average, sigma)
 
     if sigma <= 0:
-        periodic_sharpe = 0.0 if average <= 0 else float("inf")
         raw_p_value = 1.0 if average <= 0 else 0.0
         sharpe_standard_error = 0.0
     else:
-        periodic_sharpe = average / sigma
         z_score = average / (sigma / math.sqrt(observation_count))
         raw_p_value = 1.0 - _NORMAL.cdf(z_score)
         sharpe_standard_error = _sharpe_standard_error(
@@ -301,11 +314,7 @@ def run_statistical_validation(
         mean_period_return=round(average, 10),
         annualized_mean_return=round(annualized_mean, 8),
         period_volatility=round(sigma, 10),
-        periodic_sharpe_ratio=(
-            periodic_sharpe
-            if math.isinf(periodic_sharpe)
-            else round(periodic_sharpe, 8)
-        ),
+        periodic_sharpe_ratio=round(periodic_sharpe, 8),
         skewness=round(skewness, 8),
         kurtosis=round(kurtosis, 8),
         raw_one_sided_p_value=round(raw_p_value, 8),

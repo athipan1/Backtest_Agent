@@ -110,7 +110,7 @@ The aggregate nested gates cover:
 - worst future drawdown
 - aggregate kill-switch events
 
-Full-period metrics remain present for diagnostics only. They do not grant promotion and do not participate in selecting a candidate for an earlier historical test window.
+Full-period metrics and each candidate's fixed-policy out-of-sample metrics remain present for diagnostics only. They do not grant or veto adaptive promotion by themselves and do not participate in selecting a candidate for an earlier historical test window.
 
 The top-level `nested_walk_forward` object records:
 
@@ -121,7 +121,7 @@ The top-level `nested_walk_forward` object records:
 - overlap and embargo configuration
 - aggregate metrics, gates, reasons, and stability score
 
-`best_eligible` and `selected_result` remain null unless the nested gates pass, the latest training window selected an eligible exact strategy, and that candidate also passes its fixed-candidate out-of-sample stability diagnostics. Insufficient history is a safe no-trade result.
+`best_eligible` and `selected_result` remain null unless the nested gates pass and the latest training window selected an eligible exact strategy. Historical windows may select different strategies as regimes change; the top-level nested process, rather than a fixed-candidate diagnostic, is the promotion authority. Insufficient history is a safe no-trade result.
 
 See `docs/WALK_FORWARD_MULTI_STRATEGY.md` for the full chronology and expected orchestration.
 

@@ -33,14 +33,103 @@ jobs:
           format: table
 
       - name: Build production image
-        run: docker build --pull -t backtest-agent-trivy:${{ github.sha }} .
+        run: docker build --pull --no-cache -t backtest-agent-trivy:${{ github.sha }} .
 
-      - name: Scan production image
+      - name: Scan production image to JSON evidence
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: backtest-agent-trivy:${{ github.sha }}
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "1"
-          format: table
+          exit-code: "0"
+          format: json
+          output: trivy-image.json
+
+      - name: Report and block HIGH or CRITICAL image findings
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("trivy-image.json").read_text(encoding="utf-8"))
+          findings = []
+          for result in report.get("Results") or []:
+              target = result.get("Target") or "unknown-target"
+              for item in result.get("Vulnerabilities") or []:
+                  findings.append(
+                      {
+                          "kind": "vulnerability",
+                          "target": target,
+                          "severity": item.get("Severity"),
+                          "id": item.get("VulnerabilityID"),
+                          "package": item.get("PkgName"),
+                          "installed": item.get("InstalledVersion"),
+                          "fixed": item.get("FixedVersion"),
+                          "title": item.get("Title"),
+                      }
+                  )
+              for item in result.get("Misconfigurations") or []:
+                  findings.append(
+                      {
+                          "kind": "misconfiguration",
+                          "target": target,
+                          "severity": item.get("Severity"),
+                          "id": item.get("ID"),
+                          "package": item.get("Type"),
+                          "installed": None,
+                          "fixed": item.get("Resolution"),
+                          "title": item.get("Title"),
+                      }
+                  )
+              for item in result.get("Secrets") or []:
+                  findings.append(
+                      {
+                          "kind": "secret",
+                          "target": target,
+                          "severity": item.get("Severity"),
+                          "id": item.get("RuleID"),
+                          "package": item.get("Category"),
+                          "installed": None,
+                          "fixed": "remove secret from image",
+                          "title": item.get("Title"),
+                      }
+                  )
+
+          blocking = [
+              item
+              for item in findings
+              if item.get("severity") in {"HIGH", "CRITICAL"}
+          ]
+          if blocking:
+              print("Blocking Trivy image findings:")
+              for item in blocking:
+                  print(
+                      " | ".join(
+                          str(item.get(key) or "-")
+                          for key in (
+                              "severity",
+                              "kind",
+                              "target",
+                              "package",
+                              "installed",
+                              "id",
+                              "fixed",
+                              "title",
+                          )
+                      )
+                  )
+              raise SystemExit(
+                  f"Trivy found {len(blocking)} HIGH/CRITICAL image finding(s)"
+              )
+          print("No fixed HIGH/CRITICAL vulnerabilities, secrets, or misconfigurations found")
+          PY
+
+      - name: Upload Trivy image evidence
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: backtest-trivy-image-${{ github.sha }}
+          path: trivy-image.json
+          if-no-files-found: error
+          retention-days: 30

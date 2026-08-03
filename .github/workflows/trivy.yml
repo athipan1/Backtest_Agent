@@ -41,41 +41,92 @@ jobs:
             .
 
       - name: Build production image
-        run: docker build --pull --no-cache -t backtest-agent-trivy:${{ github.sha }} .
+        run: |
+          docker build \
+            --pull \
+            --no-cache \
+            --provenance=false \
+            --sbom=false \
+            -t backtest-agent-trivy:${{ github.sha }} \
+            .
 
-      - name: Verify image operating system and identity
+      - name: Verify image operating system, identity, and dependency versions
         run: |
           docker image inspect backtest-agent-trivy:${{ github.sha }} \
             --format 'image={{.Id}} user={{.Config.User}}'
           docker run --rm --entrypoint sh \
             backtest-agent-trivy:${{ github.sha }} \
-            -c 'cat /etc/os-release && grep -q "^ID=debian$" /etc/os-release'
+            -c '
+              cat /etc/os-release
+              grep -q "^ID=debian$" /etc/os-release
+              python - <<"PY"
+          from importlib.metadata import version
 
-      - name: Scan the explicit production image to JSON evidence
+          expected = {
+              "jaraco.context": "6.1.0",
+              "msgpack": "1.2.1",
+              "setuptools": "83.0.0",
+              "wheel": "0.46.2",
+          }
+          for package, expected_version in expected.items():
+              actual = version(package)
+              if actual != expected_version:
+                  raise SystemExit(f"{package}={actual}, expected {expected_version}")
+          print("Runtime dependency versions are pinned and verified")
+          PY
+            '
+
+      - name: Export the final runtime filesystem
         run: |
-          trivy image \
+          container_id="$(docker create backtest-agent-trivy:${{ github.sha }})"
+          cleanup() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          mkdir -p rootfs
+          docker export "$container_id" | tar -x -C rootfs
+
+          test -f rootfs/etc/os-release
+          grep -q '^ID=debian$' rootfs/etc/os-release
+          test -d rootfs/opt/venv/lib/python3.12/site-packages/msgpack-1.2.1.dist-info
+          test -d rootfs/opt/venv/lib/python3.12/site-packages/setuptools-83.0.0.dist-info
+
+          stale_metadata="$(find rootfs -type d \( \
+            -name 'msgpack-1.1.2.dist-info' -o \
+            -name 'setuptools-70.3.0.dist-info' \
+          \) -print)"
+          if [ -n "$stale_metadata" ]; then
+            printf 'Stale vulnerable metadata remains in final runtime filesystem:\n%s\n' "$stale_metadata"
+            exit 1
+          fi
+
+      - name: Scan the flattened final runtime filesystem
+        run: |
+          trivy rootfs \
             --scanners vuln,secret,misconfig \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 0 \
             --format json \
-            --output trivy-image.json \
-            backtest-agent-trivy:${{ github.sha }}
+            --output trivy-rootfs.json \
+            rootfs
 
-      - name: Report and block HIGH or CRITICAL image findings
+      - name: Report and block HIGH or CRITICAL runtime findings
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          report = json.loads(Path("trivy-image.json").read_text(encoding="utf-8"))
+          report = json.loads(Path("trivy-rootfs.json").read_text(encoding="utf-8"))
           findings = []
           targets = []
+          target_types = set()
           for result in report.get("Results") or []:
               target = result.get("Target") or "unknown-target"
               class_name = result.get("Class") or "unknown-class"
               type_name = result.get("Type") or "unknown-type"
               targets.append(f"{target} [{class_name}/{type_name}]")
+              target_types.add(type_name)
               for item in result.get("Vulnerabilities") or []:
                   findings.append(
                       {
@@ -111,16 +162,19 @@ jobs:
                           "id": item.get("RuleID"),
                           "package": item.get("Category"),
                           "installed": None,
-                          "fixed": "remove secret from image",
+                          "fixed": "remove secret from runtime filesystem",
                           "title": item.get("Title"),
                       }
                   )
 
-          print("Trivy image targets:")
+          print("Trivy final-runtime targets:")
           for target in targets:
               print(f"- {target}")
           assert any("debian" in target.lower() for target in targets), (
               "Trivy did not report the expected Debian operating-system target"
+          )
+          assert "python-pkg" in target_types, (
+              "Trivy did not inspect Python packages in the final runtime filesystem"
           )
 
           blocking = [
@@ -129,7 +183,7 @@ jobs:
               if item.get("severity") in {"HIGH", "CRITICAL"}
           ]
           if blocking:
-              print("Blocking Trivy image findings:")
+              print("Blocking Trivy runtime findings:")
               for item in blocking:
                   print(
                       " | ".join(
@@ -147,16 +201,16 @@ jobs:
                       )
                   )
               raise SystemExit(
-                  f"Trivy found {len(blocking)} HIGH/CRITICAL image finding(s)"
+                  f"Trivy found {len(blocking)} HIGH/CRITICAL runtime finding(s)"
               )
           print("No fixed HIGH/CRITICAL vulnerabilities, secrets, or misconfigurations found")
           PY
 
-      - name: Upload Trivy image evidence
+      - name: Upload Trivy runtime evidence
         if: always()
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: backtest-trivy-image-${{ github.sha }}
-          path: trivy-image.json
+          name: backtest-trivy-rootfs-${{ github.sha }}
+          path: trivy-rootfs.json
           if-no-files-found: error
           retention-days: 30

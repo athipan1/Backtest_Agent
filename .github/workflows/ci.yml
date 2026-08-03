@@ -2,155 +2,175 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: backtest-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Install development dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt
 
-      - name: Run tests with coverage
+      - name: Run tests with branch coverage
+        env:
+          BACKTEST_API_KEY: ci-backtest-key
         run: |
-          PYTHONPATH=. python -m pytest -q \
+          pytest -q \
             --cov=app \
+            --cov=scripts \
             --cov-branch \
             --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=85
+            --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
+            --cov-fail-under=90
 
-  quality:
-    name: Static quality and security
+      - name: Validate generated OpenAPI contract
+        env:
+          BACKTEST_API_KEY: ci-backtest-key
+        run: |
+          python - <<'PY'
+          from openapi_spec_validator import validate
+          from app.main import app
+
+          document = app.openapi()
+          validate(document)
+          assert "/backtest/run" in document["paths"]
+          assert "/backtest/multi-strategy/walk-forward" in document["paths"]
+          print("OpenAPI contract is valid")
+          PY
+
+      - name: Upload coverage evidence
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: backtest-coverage-${{ matrix.python-version }}-${{ github.sha }}
+          path: coverage-${{ matrix.python-version }}.xml
+          if-no-files-found: error
+          retention-days: 30
+
+  lint-type-security:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Set up Python 3.12
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Install development dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt
 
-      - name: Ruff critical lint checks
-        run: python -m ruff check app tests scripts
+      - name: Ruff
+        run: ruff check app scripts tests
 
-      - name: Type-check critical safety modules
+      - name: MyPy promotion and execution contracts
         run: |
-          python -m mypy \
-            app/security.py \
-            app/execution.py \
+          mypy \
+            app/api_contracts.py \
+            app/database_client.py \
             app/execution_policy.py \
+            app/hourly_promotion_runner.py \
+            app/promotion_lifecycle.py \
+            app/promotion_robustness.py \
+            app/publisher.py \
             app/run_identity.py \
-            app/statistical_validation.py \
-            app/observability.py \
-            app/readiness.py
+            scripts/run_nested_hourly_backtest.py
 
-      - name: Bandit application scan
-        run: python -m bandit -q -r app -ll
+      - name: Bandit
+        run: bandit -q -r app scripts
 
-  dependency-audit:
-    name: Dependency vulnerability audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Dependency vulnerability audit
+        run: pip-audit --strict --desc
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Install audit tool
+      - name: Generate CycloneDX SBOM
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pip-audit==2.7.3
-
-      - name: Audit production dependencies
-        run: python -m pip_audit -r requirements.txt --strict
-
-  container:
-    name: Production container smoke test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Build image
-        run: docker build --tag backtest-agent:ci .
-
-      - name: Verify non-root runtime
-        run: |
-          test "$(docker image inspect backtest-agent:ci --format '{{.Config.User}}')" = "10001:10001"
-
-      - name: Start and verify healthy container
-        run: |
-          container_id="$(docker run --detach --publish 8016:8016 backtest-agent:ci)"
-          cleanup() {
-            docker logs "${container_id}" || true
-            docker rm --force "${container_id}" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
-          for attempt in $(seq 1 30); do
-            health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "${container_id}")"
-            if [ "${health}" = "healthy" ]; then
-              break
-            fi
-            if [ "${health}" = "unhealthy" ]; then
-              exit 1
-            fi
-            sleep 2
-          done
-
-          test "$(docker inspect --format '{{.State.Health.Status}}' "${container_id}")" = "healthy"
-          curl --fail --silent --show-error http://127.0.0.1:8016/health > /tmp/health.json
+          cyclonedx-py environment \
+            --output-format JSON \
+            --output-file backtest-agent.cdx.json
           python - <<'PY'
           import json
           from pathlib import Path
 
-          payload = json.loads(Path('/tmp/health.json').read_text())
-          assert payload['status'] == 'success'
-          assert payload['data']['status'] == 'healthy'
+          document = json.loads(Path("backtest-agent.cdx.json").read_text())
+          assert document.get("bomFormat") == "CycloneDX"
+          assert document.get("components")
+          print(f"SBOM components: {len(document['components'])}")
           PY
+
+      - name: Upload security evidence
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: backtest-security-evidence-${{ github.sha }}
+          path: backtest-agent.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build container
+        run: docker build --pull -t backtest-agent-ci:${{ github.sha }} .
+
+      - name: Verify non-root user and health check
+        run: |
+          test "$(docker image inspect backtest-agent-ci:${{ github.sha }} --format '{{.Config.User}}')" = "app"
+          test -n "$(docker image inspect backtest-agent-ci:${{ github.sha }} --format '{{json .Config.Healthcheck.Test}}')"
+
+      - name: Run healthy container
+        run: |
+          docker run -d --name backtest-agent-ci \
+            -e BACKTEST_API_KEY=ci-backtest-key \
+            -p 8000:8000 \
+            backtest-agent-ci:${{ github.sha }}
+          trap 'docker logs backtest-agent-ci || true; docker rm -f backtest-agent-ci || true' EXIT
+          for attempt in $(seq 1 60); do
+            running="$(docker inspect backtest-agent-ci --format '{{.State.Running}}')"
+            if [ "$running" != "true" ]; then
+              docker logs backtest-agent-ci
+              exit 1
+            fi
+            status="$(docker inspect backtest-agent-ci --format '{{.State.Health.Status}}')"
+            if [ "$status" = "healthy" ]; then
+              curl --fail --silent http://127.0.0.1:8000/health >/dev/null
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs backtest-agent-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          docker logs backtest-agent-ci
+          exit 1

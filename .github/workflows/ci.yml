@@ -13,6 +13,11 @@ concurrency:
   group: backtest-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONPATH: .
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -34,13 +39,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run tests with branch coverage
         env:
           BACKTEST_API_KEY: ci-backtest-key
         run: |
-          pytest -q \
+          python -m pytest -q \
             --cov=app \
             --cov=scripts \
             --cov-branch \
@@ -87,14 +92,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Ruff
-        run: ruff check app scripts tests
+        run: python -m ruff check app scripts tests
 
       - name: MyPy promotion and execution contracts
         run: |
-          mypy \
+          python -m mypy \
             app/api_contracts.py \
             app/database_client.py \
             app/execution_policy.py \
@@ -106,10 +111,10 @@ jobs:
             scripts/run_nested_hourly_backtest.py
 
       - name: Bandit
-        run: bandit -q -r app scripts
+        run: python -m bandit -q -r app scripts
 
       - name: Dependency vulnerability audit
-        run: pip-audit --strict --desc
+        run: python -m pip_audit --strict --desc
 
       - name: Generate CycloneDX SBOM
         run: |

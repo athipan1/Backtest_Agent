@@ -50,11 +50,11 @@ RUN apt-get update \
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app app ./app
 
-# Official base images and wheels can contain embedded third-party SBOM files
-# that describe superseded build-time packages. The CI pipeline generates and
-# retains a fresh CycloneDX SBOM separately, so stale embedded documents are
-# removed from the runtime filesystem before the blocking rootfs scan.
-RUN find /usr/local /opt/venv -type f \( \
+# Trivy automatically imports embedded SPDX/CycloneDX documents when scanning
+# a rootfs. Base-image SBOMs can describe superseded build-time packages, so
+# runtime images contain only executable files and current package metadata.
+# A fresh CycloneDX SBOM is generated and retained as a separate CI artifact.
+RUN find / -xdev -type f \( \
         -name '*.spdx' -o \
         -name '*.spdx.json' -o \
         -name '*.cdx' -o \

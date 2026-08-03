@@ -38,7 +38,6 @@ RUN apt-get update \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app app ./app
-COPY --chown=app:app scripts ./scripts
 
 USER 10001:10001
 

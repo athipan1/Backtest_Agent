@@ -35,7 +35,7 @@ RUN apt-get update \
     && python -m pip install --no-cache-dir --upgrade \
         jaraco.context==6.1.0 \
         msgpack==1.2.1 \
-        setuptools==78.1.1 \
+        setuptools==83.0.0 \
         wheel==0.46.2 \
     && rm -rf /root/.cache/pip /var/lib/apt/lists/* \
     && groupadd --gid 10001 app \

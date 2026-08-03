@@ -12,6 +12,7 @@ from app.execution_policy import (
     resolve_execution_policy,
 )
 from app.models import (
+    BacktestMetrics,
     BacktestRobustnessRequest,
     BacktestRunRequest,
     BacktestRunResult,
@@ -132,8 +133,8 @@ def promotion_robustness_criteria_from_env() -> PromotionRobustnessCriteria:
     )
 
 
-def _finite_metrics(result: BacktestRunResult) -> bool:
-    values = result.metrics.model_dump().values()
+def _finite_metrics(metrics: BacktestMetrics) -> bool:
+    values = metrics.model_dump().values()
     return all(
         value is None
         or isinstance(value, (bool, int))
@@ -151,7 +152,7 @@ def _scenario_evidence(
 ) -> StressScenarioEvidence:
     reasons: list[str] = []
     metrics = result.metrics
-    if not _finite_metrics(result):
+    if not _finite_metrics(metrics):
         reasons.append("invalid_metrics")
     if metrics.return_pct < criteria.min_stress_return_pct:
         reasons.append("stress_return_below_floor")
@@ -306,7 +307,7 @@ def run_promotion_robustness(
         value < resolved.catastrophic_loss_floor for value in all_returns
     )
     finite_metrics = (
-        _finite_metrics(core.baseline)
+        _finite_metrics(core.baseline.metrics)
         and all(_finite_metrics(item.metrics) for item in sensitivity.scenarios)
         and all(math.isfinite(item.return_pct) for item in stress_scenarios)
     )

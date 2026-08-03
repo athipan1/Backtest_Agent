@@ -10,12 +10,17 @@ from typing import Any
 from uuid import uuid4
 
 from app.data_provider import AlpacaMarketDataProvider, dataset_fingerprint
+from app.database_client import DatabaseAgentClient
 from app.multi_strategy import build_run_request, resolve_strategy_id
 from app.multi_strategy_walk_forward import (
     WalkForwardMultiStrategyRequest,
     run_walk_forward_multi_strategy_backtest,
 )
+from app.promotion_lifecycle import create_and_advance_backtest_promotion
+from app.promotion_robustness import run_promotion_robustness
 from app.publisher import ENGINE_VERSION, publish_backtest_result
+from app.risk_engine import run_backtest_with_risk
+from app.statistical_validation import run_statistical_validation
 
 
 VALIDATION_PROFILE = "nested_walk_forward_v2"
@@ -172,12 +177,18 @@ def _selected_candidate(request: WalkForwardMultiStrategyRequest, strategy_id: s
     raise RuntimeError(f"selected strategy not found in request candidates: {strategy_id}")
 
 
-def _promotion_metadata(selection: Any) -> dict[str, Any]:
+def _promotion_metadata(
+    selection: Any,
+    statistical_evidence: Any,
+    robustness_evidence: Any,
+) -> dict[str, Any]:
     if selection.best_eligible is None:
         raise RuntimeError("promotion metadata requested without best_eligible")
     evidence = selection.nested_walk_forward.model_dump(mode="json")
     criteria = selection.walk_forward_criteria.model_dump(mode="json")
-    statistical_criteria = _statistical_criteria()
+    statistical_criteria = selection.statistical_criteria.model_dump(mode="json")
+    statistical = statistical_evidence.model_dump(mode="json")
+    robustness = robustness_evidence.model_dump(mode="json")
     selected_strategy_id = selection.best_eligible.strategy_id
     latest_strategy_id = str(evidence.get("latest_selected_strategy_id") or "")
     gates = {
@@ -191,11 +202,22 @@ def _promotion_metadata(selection: Any) -> dict[str, Any]:
         raise RuntimeError("nested selection method mismatch")
     if evidence.get("status") != "completed":
         raise RuntimeError("nested walk-forward validation is incomplete")
+    if statistical.get("status") != "completed" or statistical.get("passed") is not True:
+        raise RuntimeError("selected strategy statistical validation did not pass")
+    if not statistical.get("gates") or not all(statistical["gates"].values()):
+        raise RuntimeError("selected strategy statistical gates did not all pass")
+    if robustness.get("status") != "completed" or robustness.get("passed") is not True:
+        failed = robustness.get("failure_reasons") or []
+        raise RuntimeError(
+            "selected strategy robustness validation did not pass: "
+            + ", ".join(str(item) for item in failed)
+        )
     if not all(gates.values()):
         failed = sorted(name for name, passed in gates.items() if not passed)
         raise RuntimeError("nested promotion gates failed: " + ", ".join(failed))
     return {
         "validation_profile": VALIDATION_PROFILE,
+        "evidence_version": 1,
         "selection_method": SELECTION_METHOD,
         "walk_forward_required": True,
         "walk_forward_passed": True,
@@ -213,6 +235,13 @@ def _promotion_metadata(selection: Any) -> dict[str, Any]:
         "walk_forward_criteria": criteria,
         "promotion_gates": gates,
         "statistical_criteria": statistical_criteria,
+        "statistical_evidence": statistical,
+        "selection_gates": {
+            f"statistical_{name}": passed
+            for name, passed in statistical["gates"].items()
+        },
+        "robustness_validation": robustness,
+        "immutable_evidence_snapshot": True,
     }
 
 
@@ -233,8 +262,10 @@ def _run_id(
         "timeframe": timeframe,
         "engine_version": ENGINE_VERSION,
         "validation_profile": VALIDATION_PROFILE,
+        "evidence_version": promotion_metadata["evidence_version"],
         "walk_forward_criteria": promotion_metadata["walk_forward_criteria"],
         "statistical_criteria": promotion_metadata["statistical_criteria"],
+        "robustness_criteria": promotion_metadata["robustness_validation"]["criteria"],
     }
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode("utf-8")
@@ -266,6 +297,7 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
         base_url=os.getenv("ALPACA_DATA_API_URL", "https://data.alpaca.markets"),
         feed=os.getenv("ALPACA_DATA_FEED", "iex"),
     )
+    database_client = DatabaseAgentClient()
 
     items: list[dict[str, Any]] = []
     strategy_ids_by_symbol: dict[str, str] = {}
@@ -291,6 +323,7 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                         "status": "no_eligible_strategy",
                         "selected_strategy_id": None,
                         "published": False,
+                        "promoted": False,
                         "publish_status": "skipped",
                         "selection": selection.model_dump(mode="json"),
                         "error": None,
@@ -300,11 +333,26 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
 
             selected_strategy_id = selection.best_eligible.strategy_id
             candidate = _selected_candidate(request, selected_strategy_id)
-            run_request = build_run_request(candidate, request)
-            selected_result = selection.selected_result
-            if selected_result is None:
-                raise RuntimeError("best_eligible was returned without selected_result")
-            metadata = _promotion_metadata(selection)
+            run_request = build_run_request(candidate, request).model_copy(
+                deep=True,
+                update={"force_close_at_end": True},
+            )
+            # The stored metrics cover the same immutable full dataset used by
+            # the fingerprint. Nested untouched future windows remain the
+            # promotion authority; full-period metrics are diagnostic only.
+            selected_result = run_backtest_with_risk(run_request)
+            statistical_evidence = run_statistical_validation(
+                selected_result,
+                candidate_count=len(request.candidates),
+                periods_per_year=request.periods_per_year,
+                criteria=request.statistical_criteria,
+            )
+            robustness_evidence = run_promotion_robustness(run_request)
+            metadata = _promotion_metadata(
+                selection,
+                statistical_evidence,
+                robustness_evidence,
+            )
             run_id = _run_id(
                 symbol=symbol,
                 strategy_id=selected_strategy_id,
@@ -318,6 +366,7 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                 "payload": None,
                 "database_response": None,
             }
+            promotion_record: dict[str, Any] | None = None
             if publish_to_database:
                 report = publish_backtest_result(
                     request=run_request,
@@ -334,7 +383,7 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                         "selection_profile": "balanced_v1",
                         "selection_rank": selection.best_eligible.rank,
                         "selection_score": selection.best_eligible.score,
-                        "selection_gates": selection.best_eligible.gates,
+                        "selection_gates": metadata["selection_gates"],
                         "selection_criteria": selection.selection_criteria.model_dump(
                             mode="json"
                         ),
@@ -358,6 +407,30 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                     "Database publish did not succeed for selected strategy: "
                     f"{publish_status}"
                 )
+            if published:
+                promotion_record = create_and_advance_backtest_promotion(
+                    database_client,
+                    account_id=account_id,
+                    run_id=run_id,
+                    skill_id=skill_id,
+                    strategy_id=selected_strategy_id,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    dataset_fingerprint=fingerprint,
+                    engine_version=ENGINE_VERSION,
+                    validation_profile=VALIDATION_PROFILE,
+                    correlation_id=correlation_id,
+                    evidence_version=metadata["evidence_version"],
+                )
+                if promotion_record.get("state") not in {
+                    "ROBUSTNESS_PASSED",
+                    "APPROVED_FOR_PAPER",
+                    "PAPER_OBSERVING",
+                }:
+                    raise RuntimeError(
+                        "Promotion lifecycle did not reach a safe downstream state"
+                    )
+            promoted = promotion_record is not None
             strategy_ids_by_symbol[symbol] = selected_strategy_id
             items.append(
                 {
@@ -366,6 +439,22 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                     "run_id": run_id,
                     "selected_strategy_id": selected_strategy_id,
                     "published": published,
+                    "promoted": promoted,
+                    "promotion_id": (
+                        promotion_record.get("promotion_id")
+                        if promotion_record is not None
+                        else None
+                    ),
+                    "promotion_state": (
+                        promotion_record.get("state")
+                        if promotion_record is not None
+                        else None
+                    ),
+                    "promotion_version": (
+                        promotion_record.get("version")
+                        if promotion_record is not None
+                        else None
+                    ),
                     "publish_status": publish_status,
                     "selection": selection.model_dump(mode="json"),
                     "walk_forward": metadata,
@@ -382,18 +471,31 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                     "status": "failed",
                     "selected_strategy_id": None,
                     "published": False,
+                    "promoted": False,
                     "publish_status": "failed",
                     "selection": None,
                     "error": str(exc),
                 }
             )
 
-    eligible = [item["symbol"] for item in items if item["status"] == "eligible_strategy_found"]
-    ineligible = [item["symbol"] for item in items if item["status"] == "no_eligible_strategy"]
+    eligible = [
+        item["symbol"]
+        for item in items
+        if item["status"] == "eligible_strategy_found"
+    ]
+    ineligible = [
+        item["symbol"]
+        for item in items
+        if item["status"] == "no_eligible_strategy"
+    ]
     failed = [item["symbol"] for item in items if item["status"] == "failed"]
     published_count = sum(1 for item in items if item.get("published"))
+    promoted_count = sum(1 for item in items if item.get("promoted"))
     all_succeeded = not failed
     all_eligible_published = published_count == len(eligible)
+    all_eligible_promoted = (
+        promoted_count == len(eligible) if publish_to_database else True
+    )
     output = {
         "status": "success" if all_succeeded else "error",
         "agent_type": "backtest-agent",
@@ -411,10 +513,17 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
             "eligible_count": len(eligible),
             "ineligible_count": len(ineligible),
             "published_count": published_count,
-            "published": all_succeeded and all_eligible_published,
+            "promoted_count": promoted_count,
+            "published": (
+                all_succeeded
+                and all_eligible_published
+                and all_eligible_promoted
+            ),
             "publish_status": (
                 "success"
-                if all_succeeded and all_eligible_published
+                if all_succeeded
+                and all_eligible_published
+                and all_eligible_promoted
                 else "partial_failure"
                 if eligible or ineligible
                 else "failed"
@@ -422,6 +531,8 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
             "all_succeeded": all_succeeded,
             "selection_complete": all_succeeded,
             "walk_forward_required": True,
+            "promotion_lifecycle_required": publish_to_database,
+            "maximum_backtest_owned_state": "ROBUSTNESS_PASSED",
             "no_trade_is_success": True,
             "history_days": DEFAULT_HISTORY_DAYS,
             "minimum_bars": minimum_bars,

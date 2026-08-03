@@ -197,15 +197,16 @@ def run_promotion_robustness(
 ) -> PromotionRobustnessEvidence:
     resolved = criteria or promotion_robustness_criteria_from_env()
     baseline_policy = resolve_execution_policy(request)
-    robustness_request = BacktestRobustnessRequest(
+    robustness_payload = {
         **request.model_dump(),
-        force_close_at_end=True,
-        monte_carlo_simulations=resolved.monte_carlo_simulations,
-        monte_carlo_seed=resolved.monte_carlo_seed,
-        min_monte_carlo_trades=resolved.min_monte_carlo_trades,
-        sensitivity_fast_delta=resolved.sensitivity_fast_delta,
-        sensitivity_slow_delta=resolved.sensitivity_slow_delta,
-    )
+        "force_close_at_end": True,
+        "monte_carlo_simulations": resolved.monte_carlo_simulations,
+        "monte_carlo_seed": resolved.monte_carlo_seed,
+        "min_monte_carlo_trades": resolved.min_monte_carlo_trades,
+        "sensitivity_fast_delta": resolved.sensitivity_fast_delta,
+        "sensitivity_slow_delta": resolved.sensitivity_slow_delta,
+    }
+    robustness_request = BacktestRobustnessRequest(**robustness_payload)
     core = run_robustness_analysis(robustness_request)
 
     fee_bps = max(request.fee_bps * 2.0, request.fee_bps + 5.0, 5.0)
@@ -299,10 +300,7 @@ def run_promotion_robustness(
     all_returns = [
         core.baseline.metrics.return_pct,
         *[item.return_pct for item in stress_scenarios],
-        *[
-            item.metrics.return_pct
-            for item in sensitivity.scenarios
-        ],
+        *[item.metrics.return_pct for item in sensitivity.scenarios],
     ]
     catastrophic_loss = any(
         value < resolved.catastrophic_loss_floor for value in all_returns

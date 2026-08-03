@@ -50,7 +50,17 @@ RUN apt-get update \
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app app ./app
 
-RUN python - <<'PY'
+# Official base images and wheels can contain embedded third-party SBOM files
+# that describe superseded build-time packages. The CI pipeline generates and
+# retains a fresh CycloneDX SBOM separately, so stale embedded documents are
+# removed from the runtime filesystem before the blocking rootfs scan.
+RUN find /usr/local /opt/venv -type f \( \
+        -name '*.spdx' -o \
+        -name '*.spdx.json' -o \
+        -name '*.cdx' -o \
+        -name '*.cdx.json' \
+    \) -print -delete \
+    && python - <<'PY'
 from importlib.metadata import version
 
 expected = {

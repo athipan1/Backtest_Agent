@@ -42,8 +42,6 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Run tests with branch coverage
-        env:
-          BACKTEST_API_KEY: ci-backtest-key
         run: |
           python -m pytest -q \
             --cov=app \
@@ -106,7 +104,10 @@ jobs:
             scripts/run_nested_hourly_backtest.py
 
       - name: Bandit
-        run: python -m bandit -q -r app scripts
+        # B311 is intentionally excluded only for seeded, reproducible Monte
+        # Carlo and bootstrap simulations. These values are never used for
+        # credentials, tokens, identifiers, signatures, or security decisions.
+        run: python -m bandit -q -r app scripts -s B311
 
       - name: Dependency vulnerability audit
         run: python -m pip_audit --strict --desc

@@ -32,17 +32,39 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends curl \
-    && python -m pip install --no-cache-dir --upgrade \
-        jaraco.context==6.1.0 \
-        msgpack==1.2.1 \
-        setuptools==83.0.0 \
-        wheel==0.46.2 \
-    && rm -rf /root/.cache/pip /var/lib/apt/lists/* \
+    && rm -rf \
+        /root/.cache/pip \
+        /usr/local/bin/pip \
+        /usr/local/bin/pip3 \
+        /usr/local/bin/pip3.12 \
+        /usr/local/lib/python3.12/ensurepip \
+        /usr/local/lib/python3.12/site-packages/jaraco* \
+        /usr/local/lib/python3.12/site-packages/msgpack* \
+        /usr/local/lib/python3.12/site-packages/pip* \
+        /usr/local/lib/python3.12/site-packages/setuptools* \
+        /usr/local/lib/python3.12/site-packages/wheel* \
+        /var/lib/apt/lists/* \
     && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --chown=app:app app ./app
+
+RUN python - <<'PY'
+from importlib.metadata import version
+
+expected = {
+    "jaraco.context": "6.1.0",
+    "msgpack": "1.2.1",
+    "setuptools": "83.0.0",
+    "wheel": "0.46.2",
+}
+for package, expected_version in expected.items():
+    actual = version(package)
+    if actual != expected_version:
+        raise SystemExit(f"{package}={actual}, expected {expected_version}")
+print("Verified pinned runtime dependency versions")
+PY
 
 USER 10001:10001
 

@@ -5,8 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from app import hourly_promotion_runner as nested
 from scripts import run_hourly_backtest as dispatcher
-from scripts import run_nested_hourly_backtest as nested
+from scripts import run_nested_hourly_backtest as nested_script
 
 
 class Dumpable:
@@ -26,6 +27,23 @@ class FakeProvider:
         return [SimpleNamespace(timestamp="2024-01-01", close=100.0)] * 700
 
 
+class FakeRunRequest:
+    def __init__(self, *, bars):
+        self.symbols = ["AAPL"]
+        self.bars = bars
+
+    def model_copy(self, *, deep=False, update=None):
+        return self
+
+
+class FakeRequest:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.candidates = [SimpleNamespace(strategy_id="trend-following-balanced-v1")]
+        self.periods_per_year = kwargs["periods_per_year"]
+        self.statistical_criteria = Dumpable(kwargs["statistical_criteria"])
+
+
 def evidence(**updates):
     value = {
         "status": "completed",
@@ -41,6 +59,7 @@ def evidence(**updates):
         "overlapping_test_windows": False,
         "latest_selected_strategy_id": "trend-following-balanced-v1",
         "latest_selection_eligible": True,
+        "total_kill_switch_events": 0,
         "gates": {
             "window_count": True,
             "train_eligible_window_rate": True,
@@ -56,27 +75,66 @@ def evidence(**updates):
     return value
 
 
+def statistical_evidence(**updates):
+    value = {
+        "status": "completed",
+        "passed": True,
+        "observation_count": 200,
+        "trade_count": 20,
+        "candidate_count": 4,
+        "adjusted_p_value": 0.01,
+        "probabilistic_sharpe_ratio": 0.98,
+        "deflated_sharpe_probability": 0.94,
+        "bootstrap_annualized_return_lower": 0.02,
+        "gates": {
+            "observation_count": True,
+            "trade_count": True,
+            "adjusted_p_value": True,
+            "probabilistic_sharpe_ratio": True,
+            "deflated_sharpe_probability": True,
+            "bootstrap_lower_bound": True,
+        },
+        "reasons": [],
+    }
+    value.update(updates)
+    return Dumpable(value)
+
+
+def robustness_evidence(**updates):
+    value = {
+        "status": "completed",
+        "passed": True,
+        "scenario_pass_rate": 1.0,
+        "catastrophic_loss": False,
+        "criteria": {"min_scenario_pass_rate": 0.8},
+        "gates": {
+            "parameter_perturbation": True,
+            "fee_stress": True,
+            "spread_stress": True,
+            "slippage_stress": True,
+            "liquidity_stress": True,
+            "drawdown_stress": True,
+            "minimum_scenario_pass_rate": True,
+            "no_catastrophic_loss": True,
+            "finite_metrics": True,
+        },
+        "failure_reasons": [],
+    }
+    value.update(updates)
+    return Dumpable(value)
+
+
 def selection(*, eligible=True, nested_evidence=None):
     best = None
-    selected_result = None
     if eligible:
         best = SimpleNamespace(
             strategy_id="trend-following-balanced-v1",
             rank=1,
             score=0.88,
-            gates={"nested_oos_window_count": True},
             effective_parameters={"strategy": "trend_following"},
-        )
-        selected_result = Dumpable(
-            {
-                "strategy": "trend_following",
-                "symbols": ["AAPL"],
-                "metrics": {"return_pct": 0.12},
-            }
         )
     return SimpleNamespace(
         best_eligible=best,
-        selected_result=selected_result,
         nested_walk_forward=Dumpable(nested_evidence or evidence()),
         walk_forward_criteria=Dumpable(nested._walk_forward_criteria()),
         selection_criteria=Dumpable({"min_trades": 10}),
@@ -87,12 +145,6 @@ def selection(*, eligible=True, nested_evidence=None):
             )
         },
     )
-
-
-class FakeRequest:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.candidates = [SimpleNamespace(strategy_id="trend-following-balanced-v1")]
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +164,7 @@ def clean_environment(monkeypatch):
 def test_dispatcher_routes_required_validation_to_nested_runner(monkeypatch):
     calls = []
     monkeypatch.setenv("BACKTEST_WALK_FORWARD_GATE_REQUIRED", "true")
-    monkeypatch.setattr(nested, "main", lambda: calls.append("nested"))
+    monkeypatch.setattr(nested_script, "main", lambda: calls.append("nested"))
 
     dispatcher.main()
 
@@ -132,52 +184,48 @@ def test_nested_defaults_support_four_independent_windows():
     assert (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days >= 1824
 
 
-def test_statistical_policy_remains_enabled_and_multiple_testing_aware():
-    criteria = nested._statistical_criteria()
-
-    assert criteria["enabled"] is True
-    assert criteria["min_observations"] == 30
-    assert criteria["min_trades"] == 10
-    assert criteria["max_adjusted_p_value"] == 0.05
-    assert criteria["min_probabilistic_sharpe_ratio"] == 0.95
-    assert criteria["min_deflated_sharpe_probability"] == 0.90
-    assert criteria["bootstrap_simulations"] == 500
-
-
-def test_promotion_metadata_requires_exact_independent_nested_evidence():
-    metadata = nested._promotion_metadata(selection())
+def test_promotion_metadata_contains_numeric_statistical_and_robustness_evidence():
+    metadata = nested._promotion_metadata(
+        selection(),
+        statistical_evidence(),
+        robustness_evidence(),
+        statistical_criteria=Dumpable(nested._statistical_criteria()),
+    )
 
     assert metadata["validation_profile"] == "nested_walk_forward_v2"
-    assert metadata["selection_method"] == nested.SELECTION_METHOD
-    assert metadata["walk_forward_required"] is True
-    assert metadata["walk_forward_status"] == "completed"
-    assert metadata["walk_forward_evaluated_windows"] == 4
+    assert metadata["walk_forward_validation"]["evaluated_windows"] == 4
+    assert metadata["statistical_evidence"]["adjusted_p_value"] == 0.01
+    assert metadata["statistical_evidence"]["probabilistic_sharpe_ratio"] == 0.98
+    assert metadata["statistical_evidence"]["deflated_sharpe_probability"] == 0.94
+    assert metadata["statistical_evidence"]["bootstrap_annualized_return_lower"] == 0.02
+    assert metadata["robustness_validation"]["scenario_pass_rate"] == 1.0
     assert all(metadata["promotion_gates"].values())
-    assert metadata["statistical_criteria"]["enabled"] is True
+    assert all(metadata["selection_gates"].values())
 
 
 @pytest.mark.parametrize(
-    "nested_evidence, expected",
+    "nested_evidence, statistical, robustness, expected",
     [
-        (evidence(overlapping_test_windows=True), "independent_test_windows"),
-        (evidence(latest_selection_eligible=False), "latest_selection_eligible"),
-        (
-            evidence(latest_selected_strategy_id="mean-reversion-balanced-v1"),
-            "exact_strategy_match",
-        ),
-        (evidence(status="insufficient_history"), "validation is incomplete"),
-        (evidence(selection_method="legacy"), "selection method mismatch"),
+        (evidence(overlapping_test_windows=True), statistical_evidence(), robustness_evidence(), "independent_test_windows"),
+        (evidence(status="insufficient_history"), statistical_evidence(), robustness_evidence(), "validation is incomplete"),
+        (evidence(), statistical_evidence(passed=False), robustness_evidence(), "statistical validation did not pass"),
+        (evidence(), statistical_evidence(), robustness_evidence(passed=False, failure_reasons=["fee_stress"]), "robustness validation did not pass"),
     ],
 )
-def test_promotion_metadata_fails_closed(nested_evidence, expected):
+def test_promotion_metadata_fails_closed(nested_evidence, statistical, robustness, expected):
     with pytest.raises(RuntimeError, match=expected):
-        nested._promotion_metadata(selection(nested_evidence=nested_evidence))
+        nested._promotion_metadata(
+            selection(nested_evidence=nested_evidence),
+            statistical,
+            robustness,
+            statistical_criteria=Dumpable(nested._statistical_criteria()),
+        )
 
 
-def configure_runtime(monkeypatch, *, selected, publish):
+def configure_runtime(monkeypatch, *, selected, publish, promote=None):
     provider = FakeProvider()
     monkeypatch.setattr(nested, "AlpacaMarketDataProvider", lambda **kwargs: provider)
-    monkeypatch.setattr(nested, "dataset_fingerprint", lambda bars: "fingerprint-aapl")
+    monkeypatch.setattr(nested, "dataset_fingerprint", lambda bars: "a" * 64)
     monkeypatch.setattr(nested, "WalkForwardMultiStrategyRequest", FakeRequest)
     monkeypatch.setattr(
         nested,
@@ -192,12 +240,40 @@ def configure_runtime(monkeypatch, *, selected, publish):
     monkeypatch.setattr(
         nested,
         "build_run_request",
-        lambda candidate, request: SimpleNamespace(
-            symbols=["AAPL"],
-            bars=request.kwargs["bars"],
-        ),
+        lambda candidate, request: FakeRunRequest(bars=request.kwargs["bars"]),
+    )
+    result = Dumpable(
+        {
+            "strategy": "trend_following",
+            "symbols": ["AAPL"],
+            "metrics": {"return_pct": 0.12},
+        }
+    )
+    monkeypatch.setattr(nested, "run_backtest_with_risk", lambda request: result)
+    monkeypatch.setattr(
+        nested,
+        "run_statistical_validation",
+        lambda *args, **kwargs: statistical_evidence(),
+    )
+    monkeypatch.setattr(
+        nested,
+        "run_promotion_robustness",
+        lambda request: robustness_evidence(),
     )
     monkeypatch.setattr(nested, "publish_backtest_result", publish)
+    monkeypatch.setattr(nested, "DatabaseAgentClient", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        nested,
+        "create_and_advance_backtest_promotion",
+        promote
+        or (
+            lambda *args, **kwargs: {
+                "promotion_id": "promotion-1",
+                "state": "ROBUSTNESS_PASSED",
+                "version": 4,
+            }
+        ),
+    )
     monkeypatch.setattr(nested, "_symbols_from_env", lambda: ["AAPL"])
     return provider
 
@@ -218,13 +294,13 @@ def test_no_eligible_strategy_is_safe_success(monkeypatch, tmp_path):
     assert output["data"]["eligible_count"] == 0
     assert output["data"]["ineligible_count"] == 1
     assert output["data"]["no_trade_is_success"] is True
-    assert output["data"]["minimum_bars"] == 630
     assert provider.fetch_calls[0]["minimum_bars"] == 630
     assert publish_calls == []
 
 
-def test_eligible_strategy_publishes_manager_compatible_evidence(monkeypatch, tmp_path):
+def test_eligible_strategy_publishes_then_reaches_robustness(monkeypatch, tmp_path):
     publish_calls = []
+    promotion_calls = []
 
     def publish(**kwargs):
         publish_calls.append(kwargs)
@@ -234,42 +310,53 @@ def test_eligible_strategy_publishes_manager_compatible_evidence(monkeypatch, tm
             "database_response": {"status": "success"},
         }
 
+    def promote(*args, **kwargs):
+        promotion_calls.append(kwargs)
+        return {
+            "promotion_id": "promotion-1",
+            "state": "ROBUSTNESS_PASSED",
+            "version": 4,
+        }
+
     monkeypatch.setenv("PUBLISH_TO_DATABASE", "true")
     monkeypatch.setenv("GITHUB_RUN_ID", "123456")
-    configure_runtime(monkeypatch, selected=selection(), publish=publish)
+    configure_runtime(
+        monkeypatch,
+        selected=selection(),
+        publish=publish,
+        promote=promote,
+    )
 
     output = nested.run_nested_hourly_backtest(
         tmp_path / "reports" / "hourly-backtest-result.json"
     )
 
     assert output["status"] == "success"
-    assert output["correlation_id"] == "backtest-nested-123456"
-    assert output["data"]["strategy_ids_by_symbol"] == {
-        "AAPL": "trend-following-balanced-v1"
-    }
     assert output["data"]["published_count"] == 1
-    call = publish_calls[0]
-    assert call["correlation_id"] == "backtest-nested-123456"
-    assert call["strategy_id"] == "trend-following-balanced-v1"
-    metadata = call["metadata"]
-    assert metadata["validation_profile"] == "nested_walk_forward_v2"
-    assert metadata["selection_method"] == nested.SELECTION_METHOD
-    assert metadata["walk_forward_validation"]["evaluated_windows"] == 4
-    assert all(metadata["promotion_gates"].values())
-    assert metadata["statistical_criteria"]["enabled"] is True
-    assert metadata["storage_only"] is True
+    assert output["data"]["promoted_count"] == 1
+    assert output["data"]["maximum_backtest_owned_state"] == "ROBUSTNESS_PASSED"
+    item = output["data"]["items"][0]
+    assert item["promotion_state"] == "ROBUSTNESS_PASSED"
+    metadata = publish_calls[0]["metadata"]
+    assert metadata["immutable_evidence_snapshot"] is True
+    assert metadata["statistical_evidence"]["passed"] is True
+    assert metadata["robustness_validation"]["passed"] is True
+    assert promotion_calls[0]["run_id"] == publish_calls[0]["run_id"]
 
 
-def test_required_publish_failure_marks_symbol_failed(monkeypatch, tmp_path):
+def test_publish_or_lifecycle_failure_prevents_false_green(monkeypatch, tmp_path):
     monkeypatch.setenv("PUBLISH_TO_DATABASE", "true")
     configure_runtime(
         monkeypatch,
         selected=selection(),
         publish=lambda **kwargs: {
-            "status": "skipped",
-            "payload": None,
-            "database_response": {"status": "skipped"},
+            "status": "success",
+            "payload": {"run_id": kwargs["run_id"]},
+            "database_response": {"status": "success"},
         },
+        promote=lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("promotion transition failed")
+        ),
     )
 
     output = nested.run_nested_hourly_backtest(
@@ -278,4 +365,5 @@ def test_required_publish_failure_marks_symbol_failed(monkeypatch, tmp_path):
 
     assert output["status"] == "error"
     assert output["data"]["failed_symbols"] == ["AAPL"]
-    assert "Database publish did not succeed" in output["data"]["items"][0]["error"]
+    assert output["data"]["published"] is False
+    assert "promotion transition failed" in output["data"]["items"][0]["error"]

@@ -145,14 +145,14 @@ jobs:
 
       - name: Verify non-root user and health check
         run: |
-          test "$(docker image inspect backtest-agent-ci:${{ github.sha }} --format '{{.Config.User}}')" = "app"
+          test "$(docker image inspect backtest-agent-ci:${{ github.sha }} --format '{{.Config.User}}')" = "10001:10001"
           test -n "$(docker image inspect backtest-agent-ci:${{ github.sha }} --format '{{json .Config.Healthcheck.Test}}')"
 
       - name: Run healthy container
         run: |
           docker run -d --name backtest-agent-ci \
             -e BACKTEST_API_KEY=ci-backtest-key \
-            -p 8000:8000 \
+            -p 8016:8016 \
             backtest-agent-ci:${{ github.sha }}
           trap 'docker logs backtest-agent-ci || true; docker rm -f backtest-agent-ci || true' EXIT
           for attempt in $(seq 1 60); do
@@ -163,7 +163,7 @@ jobs:
             fi
             status="$(docker inspect backtest-agent-ci --format '{{.State.Health.Status}}')"
             if [ "$status" = "healthy" ]; then
-              curl --fail --silent http://127.0.0.1:8000/health >/dev/null
+              curl --fail --silent http://127.0.0.1:8016/health >/dev/null
               exit 0
             fi
             if [ "$status" = "unhealthy" ]; then

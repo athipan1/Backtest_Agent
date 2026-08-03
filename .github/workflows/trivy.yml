@@ -100,6 +100,17 @@ jobs:
             exit 1
           fi
 
+          embedded_sbom="$(find rootfs/usr/local rootfs/opt/venv -type f \( \
+            -name '*.spdx' -o \
+            -name '*.spdx.json' -o \
+            -name '*.cdx' -o \
+            -name '*.cdx.json' \
+          \) -print)"
+          if [ -n "$embedded_sbom" ]; then
+            printf 'Embedded third-party SBOM remains in final runtime filesystem:\n%s\n' "$embedded_sbom"
+            exit 1
+          fi
+
       - name: Scan the flattened final runtime filesystem
         run: |
           trivy rootfs \

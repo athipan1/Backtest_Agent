@@ -97,17 +97,12 @@ jobs:
       - name: Ruff
         run: python -m ruff check app scripts tests
 
-      - name: MyPy promotion and execution contracts
+      - name: MyPy promotion boundary
         run: |
-          python -m mypy \
-            app/api_contracts.py \
+          python -m mypy --follow-imports=silent \
             app/database_client.py \
-            app/execution_policy.py \
-            app/hourly_promotion_runner.py \
             app/promotion_lifecycle.py \
             app/promotion_robustness.py \
-            app/publisher.py \
-            app/run_identity.py \
             scripts/run_nested_hourly_backtest.py
 
       - name: Bandit

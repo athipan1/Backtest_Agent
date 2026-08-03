@@ -32,7 +32,12 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir --upgrade \
+        jaraco.context==6.1.0 \
+        msgpack==1.2.1 \
+        setuptools==78.1.1 \
+        wheel==0.46.2 \
+    && rm -rf /root/.cache/pip /var/lib/apt/lists/* \
     && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 

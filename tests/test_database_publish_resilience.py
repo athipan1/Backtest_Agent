@@ -182,3 +182,153 @@ def test_existing_run_with_different_identity_is_rejected(monkeypatch):
 
     with pytest.raises(RuntimeError, match="immutable identity"):
         client.publish_backtest_run(_payload(symbol="MSFT"))
+
+
+def test_invalid_environment_values_fall_back_and_extremes_are_bounded(monkeypatch):
+    monkeypatch.setenv("DATABASE_AGENT_TIMEOUT_SECONDS", "not-a-number")
+    monkeypatch.setenv("DATABASE_AGENT_RECONCILIATION_ATTEMPTS", "invalid")
+    monkeypatch.setenv("DATABASE_AGENT_RECONCILIATION_BACKOFF_SECONDS", "invalid")
+    fallback = DatabaseAgentClient(base_url="https://database.example")
+    assert fallback.timeout_seconds == 45.0
+    assert fallback.reconciliation_attempts == 3
+    assert fallback.reconciliation_backoff_seconds == 1.0
+
+    monkeypatch.setenv("DATABASE_AGENT_TIMEOUT_SECONDS", "999")
+    monkeypatch.setenv("DATABASE_AGENT_RECONCILIATION_ATTEMPTS", "99")
+    monkeypatch.setenv("DATABASE_AGENT_RECONCILIATION_BACKOFF_SECONDS", "-5")
+    bounded = DatabaseAgentClient(base_url="https://database.example")
+    assert bounded.timeout_seconds == 120.0
+    assert bounded.reconciliation_attempts == 6
+    assert bounded.reconciliation_backoff_seconds == 0.0
+
+
+def test_exact_run_matcher_rejects_each_incompatible_shape():
+    payload = _payload()
+    exact = _existing_document()
+    assert DatabaseAgentClient._existing_run_matches_payload(exact, payload)
+    assert not DatabaseAgentClient._existing_run_matches_payload({}, payload)
+    assert not DatabaseAgentClient._existing_run_matches_payload(
+        {"data": {}},
+        payload,
+    )
+
+    incompatible = _existing_document()
+    incompatible["data"]["run"]["account_id"] = "other"
+    assert not DatabaseAgentClient._existing_run_matches_payload(
+        incompatible,
+        payload,
+    )
+
+    for field in ("parameters", "metrics"):
+        incompatible = _existing_document()
+        incompatible["data"]["run"][field] = {"changed": True}
+        assert not DatabaseAgentClient._existing_run_matches_payload(
+            incompatible,
+            payload,
+        )
+
+    incompatible = _existing_document()
+    incompatible["data"]["run"]["metadata"] = None
+    assert not DatabaseAgentClient._existing_run_matches_payload(
+        incompatible,
+        payload,
+    )
+
+    incompatible = _existing_document()
+    incompatible["data"]["run"]["metadata"]["dataset_fingerprint"] = "other"
+    assert not DatabaseAgentClient._existing_run_matches_payload(
+        incompatible,
+        payload,
+    )
+
+    for field in ("trades", "equity_curve"):
+        incompatible = _existing_document()
+        incompatible["data"][field] = None
+        assert not DatabaseAgentClient._existing_run_matches_payload(
+            incompatible,
+            payload,
+        )
+
+
+def test_reconciliation_handles_transient_get_failures_and_backoff(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_get(url, *, headers, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            return _response("GET", url, 500, {"detail": "temporarily unavailable"})
+        if len(calls) == 2:
+            raise httpx.ConnectError(
+                "connection reset",
+                request=httpx.Request("GET", url),
+            )
+        return _response("GET", url, 200, _existing_document())
+
+    monkeypatch.setattr(database_client_module.httpx, "get", fake_get)
+    monkeypatch.setattr(database_client_module.time, "sleep", sleeps.append)
+    client = DatabaseAgentClient(
+        base_url="https://database.example",
+        reconciliation_attempts=3,
+        reconciliation_backoff_seconds=0.25,
+    )
+
+    document = client._reconcile_backtest_publish(
+        _payload(),
+        correlation_id="corr-1",
+    )
+
+    assert document is not None
+    assert len(calls) == 3
+    assert sleeps == [0.25, 0.5, 0.75]
+    assert client._reconcile_backtest_publish({}, correlation_id=None) is None
+
+
+def test_reconciliation_rejects_non_transient_http_error(monkeypatch):
+    def fake_get(url, *, headers, timeout):
+        return _response("GET", url, 400, {"detail": "bad request"})
+
+    monkeypatch.setattr(database_client_module.httpx, "get", fake_get)
+    client = DatabaseAgentClient(
+        base_url="https://database.example",
+        reconciliation_backoff_seconds=0,
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        client._reconcile_backtest_publish(_payload(), correlation_id=None)
+
+
+def test_publish_disabled_and_transport_paths_remain_fail_closed(monkeypatch):
+    disabled = DatabaseAgentClient(base_url="")
+    assert disabled.publish_backtest_run(_payload())["status"] == "skipped"
+
+    def fake_post(url, *, json, headers, timeout):
+        raise httpx.ConnectError(
+            "connection reset",
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(database_client_module.httpx, "post", fake_post)
+    monkeypatch.setattr(
+        database_client_module.httpx,
+        "get",
+        lambda url, **kwargs: _response("GET", url, 200, _existing_document()),
+    )
+    recovered = DatabaseAgentClient(
+        base_url="https://database.example",
+        reconciliation_backoff_seconds=0,
+    )
+    assert recovered.publish_backtest_run(_payload())["status"] == "success"
+
+    monkeypatch.setattr(
+        database_client_module.httpx,
+        "get",
+        lambda url, **kwargs: _response("GET", url, 404, {"detail": "missing"}),
+    )
+    unresolved = DatabaseAgentClient(
+        base_url="https://database.example",
+        reconciliation_attempts=1,
+        reconciliation_backoff_seconds=0,
+    )
+    with pytest.raises(RuntimeError, match="transport failed"):
+        unresolved.publish_backtest_run(_payload())

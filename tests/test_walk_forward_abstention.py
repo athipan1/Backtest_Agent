@@ -316,13 +316,20 @@ def test_hourly_criteria_keeps_legacy_eligible_rate_as_fallback(monkeypatch):
 
 def test_run_identity_changes_when_abstention_policy_changes():
     base_metadata = {
-        "evidence_version": 2,
+        "evidence_version": 3,
         "walk_forward_criteria": {
             "min_eligible_selection_rate": 0.50,
             "max_abstention_rate": 0.50,
         },
+        "statistical_schema_version": "statistical-validation.v2",
         "statistical_criteria": {"enabled": True},
         "robustness_validation": {"criteria": {"min_scenario_pass_rate": 0.8}},
+        "final_holdout_criteria": {
+            "enabled": True,
+            "bars": 252,
+            "min_trades": 10,
+        },
+        "sealed_holdout": {"dataset_fingerprint": "h" * 64},
     }
     strict_metadata = {
         **base_metadata,
@@ -336,6 +343,7 @@ def test_run_identity_changes_when_abstention_policy_changes():
         "symbol": "AAPL",
         "strategy_id": "candidate-a",
         "fingerprint": "a" * 64,
+        "research_fingerprint": "r" * 64,
         "effective_parameters": {"strategy": "sma_crossover"},
         "timeframe": "1d",
     }

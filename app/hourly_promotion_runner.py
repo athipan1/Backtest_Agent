@@ -20,7 +20,10 @@ from app.promotion_lifecycle import create_and_advance_backtest_promotion
 from app.promotion_robustness import run_promotion_robustness
 from app.publisher import ENGINE_VERSION, publish_backtest_result
 from app.risk_engine import run_backtest_with_risk
-from app.statistical_validation import run_statistical_validation
+from app.statistical_validation import (
+    STATISTICAL_VALIDATION_V2,
+    run_statistical_validation,
+)
 
 
 VALIDATION_PROFILE = "nested_walk_forward_v2"
@@ -111,6 +114,14 @@ def _walk_forward_criteria() -> dict[str, Any]:
 
 
 def _statistical_criteria() -> dict[str, Any]:
+    bootstrap_confidence = os.getenv("BACKTEST_BOOTSTRAP_CONFIDENCE") or os.getenv(
+        "BACKTEST_STATISTICAL_BOOTSTRAP_CONFIDENCE",
+        "0.95",
+    )
+    bootstrap_simulations = os.getenv("BACKTEST_BOOTSTRAP_SIMULATIONS") or os.getenv(
+        "BACKTEST_STATISTICAL_BOOTSTRAP_SIMULATIONS",
+        "500",
+    )
     return {
         "enabled": True,
         "min_observations": int(
@@ -129,12 +140,15 @@ def _statistical_criteria() -> dict[str, Any]:
         "min_bootstrap_annualized_return": float(
             os.getenv("BACKTEST_STATISTICAL_MIN_BOOTSTRAP_RETURN", "0.0")
         ),
-        "bootstrap_confidence": float(
-            os.getenv("BACKTEST_STATISTICAL_BOOTSTRAP_CONFIDENCE", "0.95")
+        "min_hac_mean_positive_probability": float(
+            os.getenv("BACKTEST_STATISTICAL_MIN_HAC_CONFIDENCE", "0.95")
         ),
-        "bootstrap_simulations": int(
-            os.getenv("BACKTEST_STATISTICAL_BOOTSTRAP_SIMULATIONS", "500")
+        "bootstrap_method": os.getenv("BACKTEST_BOOTSTRAP_METHOD", "stationary"),
+        "bootstrap_block_size": int(
+            os.getenv("BACKTEST_BOOTSTRAP_BLOCK_SIZE", "10")
         ),
+        "bootstrap_confidence": float(bootstrap_confidence),
+        "bootstrap_simulations": int(bootstrap_simulations),
         "bootstrap_seed": int(
             os.getenv("BACKTEST_STATISTICAL_BOOTSTRAP_SEED", "42")
         ),
@@ -268,11 +282,18 @@ def _promotion_metadata(
             abstention["eligible_selection_policy_passed"] is True
         ),
         "statistical_validation_enabled": statistical_policy.get("enabled") is True,
+        "statistical_validation_v2": (
+            statistical.get("schema_version") == STATISTICAL_VALIDATION_V2
+        ),
     }
     if evidence.get("selection_method") != SELECTION_METHOD:
         raise RuntimeError("nested selection method mismatch")
     if evidence.get("status") != "completed":
         raise RuntimeError("nested walk-forward validation is incomplete")
+    if statistical.get("schema_version") != STATISTICAL_VALIDATION_V2:
+        raise RuntimeError(
+            "new production promotion requires statistical-validation.v2 evidence"
+        )
     if statistical.get("status") != "completed" or statistical.get("passed") is not True:
         raise RuntimeError("selected strategy statistical validation did not pass")
     if not statistical.get("gates") or not all(statistical["gates"].values()):
@@ -314,6 +335,7 @@ def _promotion_metadata(
         "walk_forward_validation": evidence,
         "walk_forward_criteria": criteria,
         "promotion_gates": gates,
+        "statistical_schema_version": statistical.get("schema_version"),
         "statistical_criteria": statistical_policy,
         "statistical_evidence": statistical,
         "selection_gates": {
@@ -344,6 +366,9 @@ def _run_id(
         "validation_profile": VALIDATION_PROFILE,
         "evidence_version": promotion_metadata["evidence_version"],
         "walk_forward_criteria": promotion_metadata["walk_forward_criteria"],
+        "statistical_schema_version": promotion_metadata.get(
+            "statistical_schema_version"
+        ),
         "statistical_criteria": promotion_metadata["statistical_criteria"],
         "robustness_criteria": promotion_metadata["robustness_validation"]["criteria"],
     }

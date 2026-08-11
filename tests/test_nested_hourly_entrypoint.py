@@ -77,15 +77,24 @@ def evidence(**updates):
 
 def statistical_evidence(**updates):
     value = {
+        "schema_version": nested.STATISTICAL_VALIDATION_V2,
         "status": "completed",
         "passed": True,
         "observation_count": 200,
         "trade_count": 20,
         "candidate_count": 4,
+        "autocorrelation_lag1": 0.21,
+        "hac_standard_error": 0.0008,
+        "effective_sample_size": 142.5,
+        "hac_mean_positive_probability": 0.99,
         "adjusted_p_value": 0.01,
         "probabilistic_sharpe_ratio": 0.98,
         "deflated_sharpe_probability": 0.94,
+        "bootstrap_method": "stationary",
+        "bootstrap_block_size": 10,
         "bootstrap_annualized_return_lower": 0.02,
+        "block_bootstrap_annualized_return_lower": 0.02,
+        "iid_bootstrap_annualized_return_lower": 0.03,
         "gates": {
             "observation_count": True,
             "trade_count": True,
@@ -93,6 +102,9 @@ def statistical_evidence(**updates):
             "probabilistic_sharpe_ratio": True,
             "deflated_sharpe_probability": True,
             "bootstrap_lower_bound": True,
+            "block_bootstrap_lower_bound": True,
+            "hac_mean_confidence": True,
+            "time_series_bootstrap_authority": True,
         },
         "reasons": [],
     }
@@ -194,10 +206,13 @@ def test_promotion_metadata_contains_numeric_statistical_and_robustness_evidence
 
     assert metadata["validation_profile"] == "nested_walk_forward_v2"
     assert metadata["walk_forward_validation"]["evaluated_windows"] == 4
+    assert metadata["statistical_schema_version"] == nested.STATISTICAL_VALIDATION_V2
     assert metadata["statistical_evidence"]["adjusted_p_value"] == 0.01
     assert metadata["statistical_evidence"]["probabilistic_sharpe_ratio"] == 0.98
     assert metadata["statistical_evidence"]["deflated_sharpe_probability"] == 0.94
     assert metadata["statistical_evidence"]["bootstrap_annualized_return_lower"] == 0.02
+    assert metadata["statistical_evidence"]["block_bootstrap_annualized_return_lower"] == 0.02
+    assert metadata["statistical_evidence"]["hac_standard_error"] == 0.0008
     assert metadata["robustness_validation"]["scenario_pass_rate"] == 1.0
     assert all(metadata["promotion_gates"].values())
     assert all(metadata["selection_gates"].values())
@@ -339,6 +354,7 @@ def test_eligible_strategy_publishes_then_reaches_robustness(monkeypatch, tmp_pa
     assert item["promotion_state"] == "ROBUSTNESS_PASSED"
     metadata = publish_calls[0]["metadata"]
     assert metadata["immutable_evidence_snapshot"] is True
+    assert metadata["statistical_schema_version"] == nested.STATISTICAL_VALIDATION_V2
     assert metadata["statistical_evidence"]["passed"] is True
     assert metadata["robustness_validation"]["passed"] is True
     assert promotion_calls[0]["run_id"] == publish_calls[0]["run_id"]

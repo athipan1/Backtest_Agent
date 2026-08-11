@@ -11,6 +11,12 @@ from uuid import uuid4
 
 from app.data_provider import AlpacaMarketDataProvider, dataset_fingerprint
 from app.database_client import DatabaseAgentClient
+from app.final_holdout import (
+    FinalHoldoutCriteria,
+    SealedHoldoutEvidence,
+    evaluate_sealed_final_holdout,
+    split_sealed_final_holdout,
+)
 from app.multi_strategy import build_run_request, resolve_strategy_id
 from app.multi_strategy_walk_forward import (
     WalkForwardMultiStrategyRequest,
@@ -26,10 +32,11 @@ from app.statistical_validation import (
 )
 
 
-VALIDATION_PROFILE = "nested_walk_forward_v2"
+VALIDATION_PROFILE = "nested_walk_forward_v3"
 SELECTION_METHOD = "nested_train_select_test_evaluate"
 DEFAULT_HISTORY_DAYS = 5 * 365
 DEFAULT_MINIMUM_BARS = 630
+DEFAULT_FINAL_HOLDOUT_BARS = 252
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -155,6 +162,25 @@ def _statistical_criteria() -> dict[str, Any]:
     }
 
 
+def _final_holdout_criteria() -> FinalHoldoutCriteria:
+    drawdown = float(os.getenv("BACKTEST_FINAL_HOLDOUT_MAX_DRAWDOWN", "-0.20"))
+    if drawdown > 0:
+        drawdown = -drawdown
+    return FinalHoldoutCriteria(
+        enabled=_bool_env("BACKTEST_FINAL_HOLDOUT_ENABLED", True),
+        bars=int(
+            os.getenv(
+                "BACKTEST_FINAL_HOLDOUT_BARS",
+                str(DEFAULT_FINAL_HOLDOUT_BARS),
+            )
+        ),
+        min_trades=int(os.getenv("BACKTEST_FINAL_HOLDOUT_MIN_TRADES", "10")),
+        min_return=float(os.getenv("BACKTEST_FINAL_HOLDOUT_MIN_RETURN", "0.0")),
+        min_sharpe=float(os.getenv("BACKTEST_FINAL_HOLDOUT_MIN_SHARPE", "0.0")),
+        max_drawdown_floor=drawdown,
+    )
+
+
 def _request_kwargs(*, symbol: str, bars: list[Any]) -> dict[str, Any]:
     return {
         "symbols": [symbol],
@@ -255,7 +281,7 @@ def _abstention_policy_evidence(
     }
 
 
-def _promotion_metadata(
+def _pre_holdout_metadata(
     selection: Any,
     statistical_evidence: Any,
     robustness_evidence: Any,
@@ -309,7 +335,7 @@ def _promotion_metadata(
         raise RuntimeError("nested promotion gates failed: " + ", ".join(failed))
     return {
         "validation_profile": VALIDATION_PROFILE,
-        "evidence_version": 2,
+        "evidence_version": 3,
         "selection_method": SELECTION_METHOD,
         "walk_forward_required": True,
         "walk_forward_passed": True,
@@ -347,11 +373,53 @@ def _promotion_metadata(
     }
 
 
+def _attach_holdout_evidence(
+    pre_holdout_metadata: dict[str, Any],
+    sealed_holdout_evidence: SealedHoldoutEvidence,
+) -> dict[str, Any]:
+    holdout = sealed_holdout_evidence.model_dump(mode="json")
+    gates = {
+        **pre_holdout_metadata["promotion_gates"],
+        "sealed_final_holdout_enabled": holdout.get("enabled") is True,
+        "sealed_final_holdout_passed": holdout.get("passed") is True,
+        "sealed_final_holdout_all_gates": bool(holdout.get("gates"))
+        and all(holdout["gates"].values()),
+    }
+    if not all(gates.values()):
+        failed = sorted(name for name, passed in gates.items() if not passed)
+        raise RuntimeError("sealed final holdout blocked promotion: " + ", ".join(failed))
+    return {
+        **pre_holdout_metadata,
+        "promotion_gates": gates,
+        "sealed_holdout": holdout,
+        "final_holdout_criteria": holdout["criteria"],
+        "immutable_evidence_snapshot": True,
+    }
+
+
+def _promotion_metadata(
+    selection: Any,
+    statistical_evidence: Any,
+    robustness_evidence: Any,
+    sealed_holdout_evidence: SealedHoldoutEvidence,
+    *,
+    statistical_criteria: Any,
+) -> dict[str, Any]:
+    pre_holdout = _pre_holdout_metadata(
+        selection,
+        statistical_evidence,
+        robustness_evidence,
+        statistical_criteria=statistical_criteria,
+    )
+    return _attach_holdout_evidence(pre_holdout, sealed_holdout_evidence)
+
+
 def _run_id(
     *,
     symbol: str,
     strategy_id: str,
     fingerprint: str,
+    research_fingerprint: str,
     effective_parameters: dict[str, Any],
     timeframe: str,
     promotion_metadata: dict[str, Any],
@@ -360,6 +428,7 @@ def _run_id(
         "symbol": symbol,
         "strategy_id": strategy_id,
         "dataset_fingerprint": fingerprint,
+        "research_dataset_fingerprint": research_fingerprint,
         "effective_parameters": effective_parameters,
         "timeframe": timeframe,
         "engine_version": ENGINE_VERSION,
@@ -371,6 +440,10 @@ def _run_id(
         ),
         "statistical_criteria": promotion_metadata["statistical_criteria"],
         "robustness_criteria": promotion_metadata["robustness_validation"]["criteria"],
+        "final_holdout_criteria": promotion_metadata["final_holdout_criteria"],
+        "final_holdout_fingerprint": promotion_metadata["sealed_holdout"][
+            "dataset_fingerprint"
+        ],
     }
     digest = hashlib.sha256(
         json.dumps(identity, sort_keys=True).encode("utf-8")
@@ -384,9 +457,16 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
     default_start, default_end = _default_date_range()
     start = os.getenv("BACKTEST_START") or default_start
     end = os.getenv("BACKTEST_END") or default_end
-    minimum_bars = int(
+    minimum_research_bars = int(
         os.getenv("BACKTEST_NESTED_MINIMUM_BARS", str(DEFAULT_MINIMUM_BARS))
     )
+    holdout_criteria = _final_holdout_criteria()
+    if not holdout_criteria.enabled:
+        raise RuntimeError(
+            "nested promotion requires BACKTEST_FINAL_HOLDOUT_ENABLED=true; "
+            "use legacy_fixed for research without a sealed holdout"
+        )
+    minimum_bars = minimum_research_bars + holdout_criteria.bars
     bar_limit = int(os.getenv("BACKTEST_BAR_LIMIT", "10000"))
     account_id = os.getenv("BACKTEST_ACCOUNT_ID", "1")
     skill_id = os.getenv("BACKTEST_SKILL_ID", "hourly-sma-crossover")
@@ -417,8 +497,14 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                 limit=bar_limit,
             )
             fingerprint = dataset_fingerprint({symbol: bars})
+            research_bars, sealed_holdout_bars = split_sealed_final_holdout(
+                bars,
+                criteria=holdout_criteria,
+                minimum_research_bars=minimum_research_bars,
+            )
+            research_fingerprint = dataset_fingerprint({symbol: research_bars})
             request = WalkForwardMultiStrategyRequest(
-                **_request_kwargs(symbol=symbol, bars=bars)
+                **_request_kwargs(symbol=symbol, bars=research_bars)
             )
             selection = run_walk_forward_multi_strategy_backtest(request)
             if selection.best_eligible is None:
@@ -431,6 +517,11 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                         "promoted": False,
                         "publish_status": "skipped",
                         "selection": selection.model_dump(mode="json"),
+                        "sealed_holdout": {
+                            "enabled": True,
+                            "status": "sealed_not_opened",
+                            "bar_count": len(sealed_holdout_bars),
+                        },
                         "error": None,
                     }
                 )
@@ -450,16 +541,40 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                 criteria=request.statistical_criteria,
             )
             robustness_evidence = run_promotion_robustness(run_request)
-            metadata = _promotion_metadata(
+
+            # This is the last validation step allowed to inspect research data.
+            # If any pre-holdout gate fails, the sealed bars remain unexecuted.
+            pre_holdout_metadata = _pre_holdout_metadata(
                 selection,
                 statistical_evidence,
                 robustness_evidence,
                 statistical_criteria=request.statistical_criteria,
             )
+
+            holdout_request = build_run_request(candidate, request).model_copy(
+                deep=True,
+                update={
+                    "bars": {symbol: sealed_holdout_bars},
+                    "force_close_at_end": True,
+                },
+            )
+            holdout_result = run_backtest_with_risk(holdout_request)
+            sealed_holdout_evidence = evaluate_sealed_final_holdout(
+                result=holdout_result,
+                bars=sealed_holdout_bars,
+                criteria=holdout_criteria,
+                strategy_id=selected_strategy_id,
+                effective_parameters=selection.best_eligible.effective_parameters,
+            )
+            metadata = _attach_holdout_evidence(
+                pre_holdout_metadata,
+                sealed_holdout_evidence,
+            )
             run_id = _run_id(
                 symbol=symbol,
                 strategy_id=selected_strategy_id,
                 fingerprint=fingerprint,
+                research_fingerprint=research_fingerprint,
                 effective_parameters=selection.best_eligible.effective_parameters,
                 timeframe=timeframe,
                 promotion_metadata=metadata,
@@ -492,9 +607,12 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                         ),
                         "candidate_source": selection.candidate_source,
                         "dataset_fingerprint": fingerprint,
+                        "research_dataset_fingerprint": research_fingerprint,
                         "data_start": start,
                         "data_end": end,
                         "bar_count": len(bars),
+                        "research_bar_count": len(research_bars),
+                        "sealed_holdout_bar_count": len(sealed_holdout_bars),
                         **metadata,
                         "trigger": os.getenv("GITHUB_EVENT_NAME", "manual"),
                         "workflow": os.getenv("GITHUB_WORKFLOW", "hourly-backtest"),
@@ -561,6 +679,7 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
                     "publish_status": publish_status,
                     "selection": selection.model_dump(mode="json"),
                     "walk_forward": metadata,
+                    "sealed_holdout": sealed_holdout_evidence.model_dump(mode="json"),
                     "result": selected_result.model_dump(mode="json"),
                     "database_payload": report.get("payload"),
                     "database_response": report.get("database_response"),
@@ -630,10 +749,13 @@ def run_nested_hourly_backtest(report_path: Path) -> dict[str, Any]:
             "all_succeeded": all_succeeded,
             "selection_complete": all_succeeded,
             "walk_forward_required": True,
+            "sealed_final_holdout_required": True,
             "promotion_lifecycle_required": publish_to_database,
             "maximum_backtest_owned_state": "ROBUSTNESS_PASSED",
             "no_trade_is_success": True,
             "history_days": DEFAULT_HISTORY_DAYS,
+            "minimum_research_bars": minimum_research_bars,
+            "final_holdout_bars": holdout_criteria.bars,
             "minimum_bars": minimum_bars,
         },
         "error": (

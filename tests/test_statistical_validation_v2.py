@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 import pytest
 
@@ -23,11 +24,11 @@ def _ar1_returns(
     count: int = 160,
     shock_scale: float = 0.0008,
 ) -> list[float]:
+    rng = random.Random(2026)
     state = 0.0
     values: list[float] = []
-    shocks = (-1.0, -0.4, 0.2, 0.8, 0.5, -0.2, 0.3, -0.7)
-    for index in range(count):
-        state = phi * state + shocks[index % len(shocks)] * shock_scale
+    for _ in range(count):
+        state = phi * state + rng.gauss(0.0, shock_scale)
         values.append(drift + state)
     return values
 
@@ -235,6 +236,9 @@ def test_strong_serial_correlation_has_less_effective_information_than_weak():
     assert strong.effective_sample_size is not None
     assert weak.effective_sample_size is not None
     assert strong.effective_sample_size < weak.effective_sample_size
+    assert strong.hac_standard_error is not None
+    assert weak.hac_standard_error is not None
+    assert strong.hac_standard_error > weak.hac_standard_error
 
 
 def test_iid_bootstrap_is_diagnostic_only_and_never_promotion_authority():

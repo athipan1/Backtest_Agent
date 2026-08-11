@@ -154,6 +154,9 @@ def test_hourly_main_writes_batch_summary_and_per_symbol_reports(
         "bars": {"AAPL": bars, "MSFT": bars},
         "metadata": {"storage_only": True},
     }
+    monkeypatch.setenv("BACKTEST_MODE", "legacy_fixed")
+    monkeypatch.setenv("BACKTEST_ENVIRONMENT", "research")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
     monkeypatch.setattr(hourly, "_load_payload", lambda: payload)
     monkeypatch.chdir(tmp_path)
 

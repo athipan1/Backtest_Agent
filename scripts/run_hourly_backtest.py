@@ -7,6 +7,7 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -20,6 +21,21 @@ from app.main import (
     backtest_run_and_publish_batch,
 )
 from app.publisher import ENGINE_VERSION
+
+BACKTEST_MODE_NESTED_PROMOTION = "nested_promotion"
+BACKTEST_MODE_LEGACY_FIXED = "legacy_fixed"
+VALID_BACKTEST_MODES = frozenset(
+    {BACKTEST_MODE_NESTED_PROMOTION, BACKTEST_MODE_LEGACY_FIXED}
+)
+VALID_RUNTIME_ENVIRONMENTS = frozenset({"production", "research"})
+RUNTIME_EVIDENCE_SCHEMA = "backtest-runtime-mode.v1"
+NESTED_VALIDATION_PATH = [
+    "nested_walk_forward",
+    "statistical_validation",
+    "robustness",
+    "promotion_lifecycle",
+]
+LEGACY_VALIDATION_PATH = ["legacy_fixed"]
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -177,18 +193,116 @@ def _load_payload(provider=None) -> dict:
     return payload
 
 
-def _nested_validation_required() -> bool:
-    return _bool_env("BACKTEST_WALK_FORWARD_GATE_REQUIRED", False) or _bool_env(
-        "BACKTEST_NESTED_SELECTION_ENABLED",
-        False,
+def _runtime_environment() -> str:
+    event_name = os.getenv("GITHUB_EVENT_NAME", "").strip().lower()
+    configured = os.getenv("BACKTEST_ENVIRONMENT")
+
+    if event_name == "schedule":
+        if configured is not None and configured.strip().lower() != "production":
+            raise ValueError(
+                "Scheduled hourly Backtests are production runs; "
+                "BACKTEST_ENVIRONMENT cannot override them to research"
+            )
+        return "production"
+
+    environment = (configured or "research").strip().lower()
+    if environment not in VALID_RUNTIME_ENVIRONMENTS:
+        allowed = ", ".join(sorted(VALID_RUNTIME_ENVIRONMENTS))
+        raise ValueError(
+            f"Unsupported BACKTEST_ENVIRONMENT={environment!r}; expected one of: {allowed}"
+        )
+    return environment
+
+
+def _resolve_backtest_mode(environment: str | None = None) -> str:
+    environment = environment or _runtime_environment()
+    mode = (os.getenv("BACKTEST_MODE") or BACKTEST_MODE_NESTED_PROMOTION).strip().lower()
+    if mode not in VALID_BACKTEST_MODES:
+        allowed = ", ".join(sorted(VALID_BACKTEST_MODES))
+        raise ValueError(f"Unsupported BACKTEST_MODE={mode!r}; expected one of: {allowed}")
+
+    if environment == "production" and mode != BACKTEST_MODE_NESTED_PROMOTION:
+        raise RuntimeError(
+            "Production Backtests require BACKTEST_MODE=nested_promotion; "
+            "legacy_fixed is research/manual only"
+        )
+    if (
+        os.getenv("GITHUB_EVENT_NAME", "").strip().lower() == "schedule"
+        and mode != BACKTEST_MODE_NESTED_PROMOTION
+    ):
+        raise RuntimeError("Scheduled hourly Backtests cannot run legacy_fixed")
+    return mode
+
+
+def _runtime_evidence(mode: str, environment: str) -> dict[str, Any]:
+    validation_path = (
+        NESTED_VALIDATION_PATH
+        if mode == BACKTEST_MODE_NESTED_PROMOTION
+        else LEGACY_VALIDATION_PATH
+    )
+    return {
+        "schema_version": RUNTIME_EVIDENCE_SCHEMA,
+        "backtest_mode": mode,
+        "runtime_environment": environment,
+        "validation_path": list(validation_path),
+        "automatic_fallback_allowed": False,
+        "production_legacy_allowed": False,
+    }
+
+
+def _attach_runtime_evidence(
+    output: dict[str, Any], *, mode: str, environment: str
+) -> dict[str, Any]:
+    output["runtime"] = _runtime_evidence(mode, environment)
+    return output
+
+
+def _annotate_existing_report(
+    report_path: Path, *, mode: str, environment: str
+) -> None:
+    if not report_path.exists():
+        return
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(report, dict):
+        raise RuntimeError("Hourly Backtest report root must be a JSON object")
+    _attach_runtime_evidence(report, mode=mode, environment=environment)
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _log_runtime_mode(mode: str, environment: str) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "backtest_runtime_mode",
+                **_runtime_evidence(mode, environment),
+            },
+            sort_keys=True,
+        )
     )
 
 
 def main() -> None:
-    if _nested_validation_required():
+    environment = _runtime_environment()
+    mode = _resolve_backtest_mode(environment)
+    _log_runtime_mode(mode, environment)
+
+    if mode == BACKTEST_MODE_NESTED_PROMOTION:
         from scripts.run_nested_hourly_backtest import main as nested_main
 
-        nested_main()
+        report_path = Path(
+            os.getenv("BACKTEST_REPORT_PATH", "reports/hourly-backtest-result.json")
+        )
+        try:
+            nested_main()
+        finally:
+            _annotate_existing_report(
+                report_path,
+                mode=mode,
+                environment=environment,
+            )
         return
 
     payload = _load_payload()
@@ -205,7 +319,11 @@ def main() -> None:
         response = backtest_run_and_publish_batch(
             BacktestBatchRunAndPublishRequest(**batch_payload)
         )
-    output = response.model_dump(mode="json")
+    output = _attach_runtime_evidence(
+        response.model_dump(mode="json"),
+        mode=mode,
+        environment=environment,
+    )
     reports_dir = Path("reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / "hourly-backtest-result.json"
@@ -222,13 +340,7 @@ def main() -> None:
 
     publish_required = bool(payload.get("publish_to_database", True))
     if len(payload["symbols"]) == 1:
-        if (
-            publish_required
-            and (
-                response.data is None
-                or not response.data.published
-            )
-        ):
+        if publish_required and (response.data is None or not response.data.published):
             publish_status = (
                 "missing_result"
                 if response.data is None

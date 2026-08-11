@@ -34,6 +34,8 @@ class WalkForwardStabilityCriteria(BaseModel):
     min_windows: int = Field(default=4, ge=1)
     min_window_trades: int = Field(default=1, ge=0)
     min_train_eligible_window_rate: float = Field(default=0.50, ge=0, le=1)
+    min_eligible_selection_rate: float = Field(default=0.50, ge=0, le=1)
+    max_abstention_rate: float = Field(default=0.50, ge=0, le=1)
     min_profitable_window_rate: float = Field(default=0.60, ge=0, le=1)
     min_median_sharpe_ratio: float = 0.70
     min_median_profit_factor: float = Field(default=1.10, ge=0)
@@ -61,11 +63,13 @@ class WalkForwardWindowResult(BaseModel):
     test_end: str
     train_bars: int
     test_bars: int
-    selected_strategy_id: str
-    selected_strategy_name: str
+    decision: Literal["TRADE", "NO_TRADE"] = "TRADE"
+    selected_strategy_id: Optional[str] = None
+    selected_strategy_name: Optional[str] = None
     train_selection_eligible: bool
-    train_selection_score: float
-    train_metrics: BacktestMetrics
+    train_selection_score: Optional[float] = None
+    train_metrics: Optional[BacktestMetrics] = None
+    capital_deployed: bool = True
     profitable: bool
     metrics: BacktestMetrics
     warnings: List[str] = Field(default_factory=list)
@@ -83,6 +87,11 @@ class WalkForwardStabilityResult(BaseModel):
     evaluated_windows: int
     train_eligible_windows: int = 0
     train_eligible_window_rate: float = 0.0
+    eligible_selection_rate: float = 0.0
+    no_trade_windows: int = 0
+    trade_windows: int = 0
+    abstention_rate: float = 0.0
+    capital_deployed_rate: float = 0.0
     profitable_windows: int
     profitable_window_rate: float
     median_annualized_return: Optional[float] = None
@@ -169,6 +178,39 @@ def _window_slices(
     return windows
 
 
+def _cash_hold_metrics(initial_equity: float) -> BacktestMetrics:
+    """Represent a real cash-only window without fabricating strategy activity."""
+
+    return BacktestMetrics(
+        initial_equity=initial_equity,
+        final_equity=initial_equity,
+        net_profit=0.0,
+        return_pct=0.0,
+        trade_count=0,
+        winning_trades=0,
+        losing_trades=0,
+        win_rate=0.0,
+        gross_profit=0.0,
+        gross_loss=0.0,
+        profit_factor=None,
+        expectancy=0.0,
+        max_drawdown=0.0,
+        annualized_return=0.0,
+        annualized_volatility=0.0,
+        sharpe_ratio=None,
+        sortino_ratio=None,
+        calmar_ratio=None,
+        realized_net_profit=0.0,
+        unrealized_pnl=0.0,
+        open_position_count=0,
+        allocation_rejections=0,
+        partial_fills=0,
+        liquidity_rejections=0,
+        risk_rejections=0,
+        kill_switch_events=0,
+    )
+
+
 def _profit_factor_for_stability(metrics: BacktestMetrics) -> float:
     if metrics.profit_factor is not None:
         return metrics.profit_factor
@@ -197,9 +239,9 @@ def _stability_score(
     window_component = min(evaluated_windows / criteria.min_windows, 1.0)
     train_component = (
         1.0
-        if criteria.min_train_eligible_window_rate == 0
+        if criteria.min_eligible_selection_rate == 0
         else min(
-            train_eligible_window_rate / criteria.min_train_eligible_window_rate,
+            train_eligible_window_rate / criteria.min_eligible_selection_rate,
             1.0,
         )
     )
@@ -261,17 +303,29 @@ def _summarize_windows(
         if evaluated_windows == 0
         else train_eligible_windows / evaluated_windows
     )
+    trade_windows = sum(1 for window in windows if window.decision == "TRADE")
+    no_trade_windows = evaluated_windows - trade_windows
+    abstention_rate = (
+        0.0 if evaluated_windows == 0 else no_trade_windows / evaluated_windows
+    )
+    capital_deployed_windows = sum(1 for window in windows if window.capital_deployed)
+    capital_deployed_rate = (
+        0.0
+        if evaluated_windows == 0
+        else capital_deployed_windows / evaluated_windows
+    )
     profitable_windows = sum(1 for window in windows if window.profitable)
     profitable_window_rate = (
         0.0
         if evaluated_windows == 0
         else profitable_windows / evaluated_windows
     )
+    performance_windows = [window for window in windows if window.capital_deployed]
     median_annualized_return = _median_optional(
-        [window.metrics.annualized_return for window in windows]
+        [window.metrics.annualized_return for window in performance_windows]
     )
     median_sharpe_ratio = _median_optional(
-        [window.metrics.sharpe_ratio for window in windows]
+        [window.metrics.sharpe_ratio for window in performance_windows]
     )
     median_profit_factor = (
         round(
@@ -279,18 +333,18 @@ def _summarize_windows(
                 median(
                     [
                         _profit_factor_for_stability(window.metrics)
-                        for window in windows
+                        for window in performance_windows
                     ]
                 )
             ),
             6,
         )
-        if windows
+        if performance_windows
         else None
     )
     worst_max_drawdown = (
-        min(window.metrics.max_drawdown for window in windows)
-        if windows
+        min(window.metrics.max_drawdown for window in performance_windows)
+        if performance_windows
         else None
     )
     total_kill_switch_events = sum(
@@ -302,6 +356,10 @@ def _summarize_windows(
             train_eligible_window_rate
             >= criteria.min_train_eligible_window_rate
         ),
+        "eligible_selection_rate": (
+            train_eligible_window_rate >= criteria.min_eligible_selection_rate
+        ),
+        "max_abstention_rate": abstention_rate <= criteria.max_abstention_rate,
         "profitable_window_rate": (
             profitable_window_rate >= criteria.min_profitable_window_rate
         ),
@@ -324,6 +382,8 @@ def _summarize_windows(
     observations = {
         "window_count": evaluated_windows,
         "train_eligible_window_rate": round(train_eligible_window_rate, 6),
+        "eligible_selection_rate": round(train_eligible_window_rate, 6),
+        "max_abstention_rate": round(abstention_rate, 6),
         "profitable_window_rate": round(profitable_window_rate, 6),
         "median_sharpe_ratio": median_sharpe_ratio,
         "median_profit_factor": median_profit_factor,
@@ -340,7 +400,11 @@ def _summarize_windows(
         if evaluated_windows >= criteria.min_windows
         else "insufficient_history"
     )
-    counts = Counter(window.selected_strategy_id for window in windows)
+    counts = Counter(
+        window.selected_strategy_id
+        for window in windows
+        if window.selected_strategy_id is not None
+    )
     latest = windows[-1] if windows else None
     return WalkForwardStabilityResult(
         status=status,
@@ -359,6 +423,11 @@ def _summarize_windows(
         evaluated_windows=evaluated_windows,
         train_eligible_windows=train_eligible_windows,
         train_eligible_window_rate=round(train_eligible_window_rate, 6),
+        eligible_selection_rate=round(train_eligible_window_rate, 6),
+        no_trade_windows=no_trade_windows,
+        trade_windows=trade_windows,
+        abstention_rate=round(abstention_rate, 6),
+        capital_deployed_rate=round(capital_deployed_rate, 6),
         profitable_windows=profitable_windows,
         profitable_window_rate=round(profitable_window_rate, 6),
         median_annualized_return=median_annualized_return,
@@ -372,7 +441,9 @@ def _summarize_windows(
             latest.selected_strategy_id if latest is not None else None
         ),
         latest_selection_eligible=(
-            latest.train_selection_eligible if latest is not None else False
+            latest is not None
+            and latest.decision == "TRADE"
+            and latest.train_selection_eligible
         ),
         selection_counts=dict(sorted(counts.items())),
         gates=gates,
@@ -424,11 +495,13 @@ def run_candidate_walk_forward_stability(
                 test_end=test_slice[-1].timestamp.isoformat(),
                 train_bars=len(train_slice),
                 test_bars=len(test_slice),
+                decision="TRADE",
                 selected_strategy_id=strategy_id,
                 selected_strategy_name=candidate.name,
                 train_selection_eligible=True,
                 train_selection_score=0.0,
                 train_metrics=train_result.metrics,
+                capital_deployed=True,
                 profitable=profitable,
                 metrics=test_result.metrics,
                 warnings=list(
@@ -474,11 +547,34 @@ def run_nested_walk_forward_stability(
             },
         )
         train_selection = run_multi_strategy_backtest(train_request)
-        selected_item = (
-            train_selection.best_eligible or train_selection.best_overall
-        )
+        selected_item = train_selection.best_eligible
         if selected_item is None:
+            windows.append(
+                WalkForwardWindowResult(
+                    window=window_number,
+                    train_start=train_slice[0].timestamp.isoformat(),
+                    train_end=train_slice[-1].timestamp.isoformat(),
+                    test_start=test_slice[0].timestamp.isoformat(),
+                    test_end=test_slice[-1].timestamp.isoformat(),
+                    train_bars=len(train_slice),
+                    test_bars=len(test_slice),
+                    decision="NO_TRADE",
+                    selected_strategy_id=None,
+                    selected_strategy_name=None,
+                    train_selection_eligible=False,
+                    train_selection_score=None,
+                    train_metrics=None,
+                    capital_deployed=False,
+                    profitable=False,
+                    metrics=_cash_hold_metrics(request.initial_equity),
+                    warnings=[
+                        "No training candidate passed eligibility gates; held cash "
+                        "through the untouched future test window."
+                    ],
+                )
+            )
             continue
+
         candidate = candidates[selected_item.strategy_id]
         test_request = build_run_request(candidate, request).model_copy(
             deep=True,
@@ -502,13 +598,13 @@ def run_nested_walk_forward_stability(
                 test_end=test_slice[-1].timestamp.isoformat(),
                 train_bars=len(train_slice),
                 test_bars=len(test_slice),
+                decision="TRADE",
                 selected_strategy_id=selected_item.strategy_id,
                 selected_strategy_name=selected_item.name,
-                train_selection_eligible=(
-                    train_selection.best_eligible is not None
-                ),
+                train_selection_eligible=True,
                 train_selection_score=selected_item.score,
                 train_metrics=selected_item.metrics,
+                capital_deployed=True,
                 profitable=profitable,
                 metrics=test_result.metrics,
                 warnings=list(
@@ -649,6 +745,11 @@ def run_walk_forward_multi_strategy_backtest(
         "Full-period metrics are diagnostic only; promotion is determined by "
         "nested train-selection and untouched future test windows."
     )
+    if nested.no_trade_windows:
+        warnings.append(
+            "Nested windows with no eligible training candidate were true "
+            "NO_TRADE abstentions with cash held and no strategy exposure."
+        )
     if best_eligible is None:
         warnings.append(
             "No strategy passed nested out-of-sample gates and the latest "

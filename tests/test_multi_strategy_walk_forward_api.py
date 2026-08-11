@@ -49,6 +49,8 @@ def test_walk_forward_multi_strategy_endpoint_returns_nested_oos_evidence():
                 "step_bars": 60,
                 "min_windows": 4,
                 "min_train_eligible_window_rate": 0.0,
+                "min_eligible_selection_rate": 0.0,
+                "max_abstention_rate": 1.0,
                 "min_profitable_window_rate": 0.5,
                 "min_median_sharpe_ratio": 0.0,
                 "min_median_profit_factor": 0.0,
@@ -82,11 +84,23 @@ def test_walk_forward_multi_strategy_endpoint_returns_nested_oos_evidence():
     assert nested["selection_method"] == "nested_train_select_test_evaluate"
     assert nested["evaluated_windows"] == 4
     assert nested["overlapping_test_windows"] is False
-    assert nested["selection_counts"] == {"mean-reversion-api-v1": 4}
+    assert nested["selection_counts"] == {}
+    assert nested["no_trade_windows"] == 4
+    assert nested["trade_windows"] == 0
+    assert nested["abstention_rate"] == 1.0
+    assert nested["eligible_selection_rate"] == 0.0
+    assert nested["capital_deployed_rate"] == 0.0
     assert all(
         window["train_end"] < window["test_start"]
         for window in nested["windows"]
     )
+    assert all(window["decision"] == "NO_TRADE" for window in nested["windows"])
+    assert all(
+        window["selected_strategy_id"] is None
+        for window in nested["windows"]
+    )
+    assert all(window["capital_deployed"] is False for window in nested["windows"])
+    assert all(window["metrics"]["trade_count"] == 0 for window in nested["windows"])
 
     item = data["ranked_results"][0]
     assert item["strategy_id"] == "mean-reversion-api-v1"
@@ -94,14 +108,9 @@ def test_walk_forward_multi_strategy_endpoint_returns_nested_oos_evidence():
     assert len(item["walk_forward"]["windows"]) == 4
     assert "candidate_oos_stability" in item["score_components"]
     assert "nested_oos_stability" in item["score_components"]
-    assert data["selection_status"] in {
-        "eligible_strategy_found",
-        "no_eligible_strategy",
-    }
-    if data["best_eligible"] is None:
-        assert data["selected_result"] is None
-    else:
-        assert data["selected_result"] is not None
+    assert data["selection_status"] == "no_eligible_strategy"
+    assert data["best_eligible"] is None
+    assert data["selected_result"] is None
 
 
 def test_walk_forward_endpoint_rejects_multiple_symbols():

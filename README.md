@@ -41,6 +41,7 @@ PYTHONPATH=. pytest -q
 - `POST /backtest/robustness`
 - `POST /backtest/compare`
 - `POST /backtest/walk-forward`
+- `POST /backtest/multi-strategy/walk-forward`
 - `POST /backtest/report`
 - `POST /backtest/run-and-publish`
 - `POST /backtest/run-and-publish-batch`
@@ -209,13 +210,48 @@ The trade-P/L bootstrap is an approximation: it tests outcome-order and sample
 risk but does not synthesize new market bars. Sensitivity results should be
 combined with walk-forward validation before promotion to paper trading.
 
+## Production hourly nested promotion
+
+Scheduled hourly validation is locked to `BACKTEST_MODE=nested_promotion` and a
+production runtime environment. `legacy_fixed` remains available only as an
+explicit manual/research mode. Invalid modes fail closed and a nested failure
+never falls back to the legacy executor. Hourly reports record the runtime mode
+and validation path.
+
+Nested walk-forward uses true abstention semantics. If no candidate passes the
+training-window eligibility gates, the untouched future test window is recorded
+as `decision=NO_TRADE`: no strategy is selected, capital remains cash, and the
+strategy execution simulator is not invoked for that window. A failed candidate
+is never promoted merely because it ranked best among the failed candidates.
+
+Each nested window records `decision`, `selected_strategy_id`,
+`train_selection_eligible`, and `capital_deployed`. Aggregate evidence includes
+`abstention_rate`, `eligible_selection_rate`, `capital_deployed_rate`,
+`no_trade_windows`, and `trade_windows`. Production promotion can fail when the
+strategy abstains too often or produces too few eligible training selections.
+Configure these gates with:
+
+```text
+BACKTEST_WALK_FORWARD_MAX_ABSTENTION_RATE
+BACKTEST_WALK_FORWARD_MIN_ELIGIBLE_SELECTION_RATE
+```
+
+`BACKTEST_WALK_FORWARD_MIN_TRAIN_ELIGIBLE_RATE` is retained as a compatibility
+fallback when the new minimum eligible-selection variable is not set. New
+promotion evidence uses evidence version 2, and the walk-forward policy is part
+of deterministic run identity. `NO_TRADE` is a successful validation outcome,
+not an operational failure, but it never creates false promotion evidence.
+
 ## Next phases
 
-- Risk Agent adapter
-- Performance Agent report adapter
-- Scanner replay mode
-- Strategy comparison endpoint
-- Rolling multi-fold walk-forward validation
+- Time-series-aware statistical validation
+- Sealed final holdout
+- Historical experiment registry
+- Historical data quality gate
+- Full evidence hash reconciliation
+- Execution realism v0.8
+- Portfolio-level walk-forward validation
+- Regime-specific backtest evidence
 
 ## Scheduled historical data
 

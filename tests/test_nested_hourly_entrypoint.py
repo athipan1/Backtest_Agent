@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +24,14 @@ class FakeProvider:
 
     def fetch_bars(self, **kwargs):
         self.fetch_calls.append(kwargs)
-        return [SimpleNamespace(timestamp="2024-01-01", close=100.0)] * 700
+        start = datetime(2021, 1, 1, tzinfo=timezone.utc)
+        return [
+            SimpleNamespace(
+                timestamp=start + timedelta(days=index),
+                close=100.0 + index,
+            )
+            for index in range(900)
+        ]
 
 
 class FakeRunRequest:
@@ -33,6 +40,8 @@ class FakeRunRequest:
         self.bars = bars
 
     def model_copy(self, *, deep=False, update=None):
+        if update and "bars" in update:
+            return FakeRunRequest(bars=update["bars"])
         return self
 
 
@@ -136,6 +145,42 @@ def robustness_evidence(**updates):
     return Dumpable(value)
 
 
+def holdout_evidence(**updates):
+    value = {
+        "enabled": True,
+        "start": "2024-01-01T00:00:00+00:00",
+        "end": "2024-12-31T00:00:00+00:00",
+        "bar_count": 252,
+        "trade_count": 20,
+        "return_pct": 0.08,
+        "sharpe_ratio": 1.1,
+        "profit_factor": 1.4,
+        "max_drawdown": -0.08,
+        "dataset_fingerprint": "b" * 64,
+        "strategy_id": "trend-following-balanced-v1",
+        "effective_parameters_sha256": "c" * 64,
+        "passed": True,
+        "gates": {
+            "bar_count": True,
+            "minimum_trades": True,
+            "minimum_return": True,
+            "minimum_sharpe": True,
+            "maximum_drawdown": True,
+            "exact_strategy": True,
+        },
+        "criteria": {
+            "enabled": True,
+            "bars": 252,
+            "min_trades": 10,
+            "min_return": 0.0,
+            "min_sharpe": 0.0,
+            "max_drawdown_floor": -0.20,
+        },
+    }
+    value.update(updates)
+    return Dumpable(value)
+
+
 def selection(*, eligible=True, nested_evidence=None):
     best = None
     if eligible:
@@ -143,7 +188,11 @@ def selection(*, eligible=True, nested_evidence=None):
             strategy_id="trend-following-balanced-v1",
             rank=1,
             score=0.88,
-            effective_parameters={"strategy": "trend_following"},
+            effective_parameters={
+                "strategy": "trend_following",
+                "fast_window": 10,
+                "slow_window": 30,
+            },
         )
     return SimpleNamespace(
         best_eligible=best,
@@ -167,6 +216,8 @@ def clean_environment(monkeypatch):
         "BACKTEST_START",
         "BACKTEST_END",
         "BACKTEST_NESTED_MINIMUM_BARS",
+        "BACKTEST_FINAL_HOLDOUT_ENABLED",
+        "BACKTEST_FINAL_HOLDOUT_BARS",
         "PUBLISH_TO_DATABASE",
         "GITHUB_RUN_ID",
     ]:
@@ -183,8 +234,9 @@ def test_dispatcher_routes_required_validation_to_nested_runner(monkeypatch):
     assert calls == ["nested"]
 
 
-def test_nested_defaults_support_four_independent_windows():
+def test_nested_defaults_support_four_independent_windows_plus_sealed_holdout():
     criteria = nested._walk_forward_criteria()
+    holdout = nested._final_holdout_criteria()
     start, end = nested._default_date_range()
 
     assert criteria["train_bars"] == 126
@@ -193,27 +245,28 @@ def test_nested_defaults_support_four_independent_windows():
     assert criteria["allow_overlapping_test_windows"] is False
     assert criteria["min_windows"] == 4
     assert nested.DEFAULT_MINIMUM_BARS == 630
+    assert holdout.enabled is True
+    assert holdout.bars == 252
     assert (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days >= 1824
 
 
-def test_promotion_metadata_contains_numeric_statistical_and_robustness_evidence():
+def test_promotion_metadata_contains_statistical_robustness_and_holdout_evidence():
     metadata = nested._promotion_metadata(
         selection(),
         statistical_evidence(),
         robustness_evidence(),
+        holdout_evidence(),
         statistical_criteria=Dumpable(nested._statistical_criteria()),
     )
 
-    assert metadata["validation_profile"] == "nested_walk_forward_v2"
+    assert metadata["validation_profile"] == "nested_walk_forward_v3"
+    assert metadata["evidence_version"] == 3
     assert metadata["walk_forward_validation"]["evaluated_windows"] == 4
     assert metadata["statistical_schema_version"] == nested.STATISTICAL_VALIDATION_V2
     assert metadata["statistical_evidence"]["adjusted_p_value"] == 0.01
-    assert metadata["statistical_evidence"]["probabilistic_sharpe_ratio"] == 0.98
-    assert metadata["statistical_evidence"]["deflated_sharpe_probability"] == 0.94
-    assert metadata["statistical_evidence"]["bootstrap_annualized_return_lower"] == 0.02
-    assert metadata["statistical_evidence"]["block_bootstrap_annualized_return_lower"] == 0.02
-    assert metadata["statistical_evidence"]["hac_standard_error"] == 0.0008
     assert metadata["robustness_validation"]["scenario_pass_rate"] == 1.0
+    assert metadata["sealed_holdout"]["bar_count"] == 252
+    assert metadata["sealed_holdout"]["dataset_fingerprint"] == "b" * 64
     assert all(metadata["promotion_gates"].values())
     assert all(metadata["selection_gates"].values())
 
@@ -227,9 +280,9 @@ def test_promotion_metadata_contains_numeric_statistical_and_robustness_evidence
         (evidence(), statistical_evidence(), robustness_evidence(passed=False, failure_reasons=["fee_stress"]), "robustness validation did not pass"),
     ],
 )
-def test_promotion_metadata_fails_closed(nested_evidence, statistical, robustness, expected):
+def test_pre_holdout_metadata_fails_closed(nested_evidence, statistical, robustness, expected):
     with pytest.raises(RuntimeError, match=expected):
-        nested._promotion_metadata(
+        nested._pre_holdout_metadata(
             selection(nested_evidence=nested_evidence),
             statistical,
             robustness,
@@ -237,16 +290,47 @@ def test_promotion_metadata_fails_closed(nested_evidence, statistical, robustnes
         )
 
 
-def configure_runtime(monkeypatch, *, selected, publish, promote=None):
+def test_holdout_failure_blocks_promotion_metadata():
+    pre = nested._pre_holdout_metadata(
+        selection(),
+        statistical_evidence(),
+        robustness_evidence(),
+        statistical_criteria=Dumpable(nested._statistical_criteria()),
+    )
+
+    with pytest.raises(RuntimeError, match="sealed final holdout blocked promotion"):
+        nested._attach_holdout_evidence(
+            pre,
+            holdout_evidence(
+                passed=False,
+                gates={
+                    "bar_count": True,
+                    "minimum_trades": False,
+                    "minimum_return": True,
+                    "minimum_sharpe": True,
+                    "maximum_drawdown": True,
+                    "exact_strategy": True,
+                },
+            ),
+        )
+
+
+def configure_runtime(monkeypatch, *, selected, publish, promote=None, events=None):
     provider = FakeProvider()
+    events = events if events is not None else []
     monkeypatch.setattr(nested, "AlpacaMarketDataProvider", lambda **kwargs: provider)
-    monkeypatch.setattr(nested, "dataset_fingerprint", lambda bars: "a" * 64)
-    monkeypatch.setattr(nested, "WalkForwardMultiStrategyRequest", FakeRequest)
     monkeypatch.setattr(
         nested,
-        "run_walk_forward_multi_strategy_backtest",
-        lambda request: selected,
+        "dataset_fingerprint",
+        lambda bars: "a" * 64 if len(next(iter(bars.values()))) == 900 else "d" * 64,
     )
+    monkeypatch.setattr(nested, "WalkForwardMultiStrategyRequest", FakeRequest)
+
+    def select(request):
+        events.append(("selection", len(request.kwargs["bars"]["AAPL"])))
+        return selected
+
+    monkeypatch.setattr(nested, "run_walk_forward_multi_strategy_backtest", select)
     monkeypatch.setattr(
         nested,
         "resolve_strategy_id",
@@ -264,17 +348,30 @@ def configure_runtime(monkeypatch, *, selected, publish, promote=None):
             "metrics": {"return_pct": 0.12},
         }
     )
-    monkeypatch.setattr(nested, "run_backtest_with_risk", lambda request: result)
+
+    def execute(request):
+        bar_count = len(request.bars["AAPL"])
+        events.append(("execute", bar_count))
+        return result
+
+    monkeypatch.setattr(nested, "run_backtest_with_risk", execute)
     monkeypatch.setattr(
         nested,
         "run_statistical_validation",
         lambda *args, **kwargs: statistical_evidence(),
     )
-    monkeypatch.setattr(
-        nested,
-        "run_promotion_robustness",
-        lambda request: robustness_evidence(),
-    )
+
+    def robust(request):
+        events.append(("robustness", len(request.bars["AAPL"])))
+        return robustness_evidence()
+
+    monkeypatch.setattr(nested, "run_promotion_robustness", robust)
+
+    def evaluate(**kwargs):
+        events.append(("holdout_evidence", len(kwargs["bars"])))
+        return holdout_evidence()
+
+    monkeypatch.setattr(nested, "evaluate_sealed_final_holdout", evaluate)
     monkeypatch.setattr(nested, "publish_backtest_result", publish)
     monkeypatch.setattr(nested, "DatabaseAgentClient", lambda: SimpleNamespace())
     monkeypatch.setattr(
@@ -293,12 +390,14 @@ def configure_runtime(monkeypatch, *, selected, publish, promote=None):
     return provider
 
 
-def test_no_eligible_strategy_is_safe_success(monkeypatch, tmp_path):
+def test_no_eligible_strategy_keeps_holdout_sealed(monkeypatch, tmp_path):
     publish_calls = []
+    events = []
     provider = configure_runtime(
         monkeypatch,
         selected=selection(eligible=False),
         publish=lambda **kwargs: publish_calls.append(kwargs),
+        events=events,
     )
 
     output = nested.run_nested_hourly_backtest(
@@ -309,15 +408,45 @@ def test_no_eligible_strategy_is_safe_success(monkeypatch, tmp_path):
     assert output["data"]["eligible_count"] == 0
     assert output["data"]["ineligible_count"] == 1
     assert output["data"]["no_trade_is_success"] is True
-    assert provider.fetch_calls[0]["minimum_bars"] == 630
+    assert provider.fetch_calls[0]["minimum_bars"] == 882
+    assert events == [("selection", 648)]
+    assert output["data"]["items"][0]["sealed_holdout"]["status"] == "sealed_not_opened"
     assert publish_calls == []
 
 
-def test_eligible_strategy_publishes_then_reaches_robustness(monkeypatch, tmp_path):
+def test_selection_never_sees_holdout_and_holdout_opens_last(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setenv("PUBLISH_TO_DATABASE", "false")
+    configure_runtime(
+        monkeypatch,
+        selected=selection(),
+        publish=lambda **kwargs: pytest.fail("publish disabled"),
+        events=events,
+    )
+
+    output = nested.run_nested_hourly_backtest(
+        tmp_path / "reports" / "hourly-backtest-result.json"
+    )
+
+    assert output["status"] == "success"
+    assert events == [
+        ("selection", 648),
+        ("execute", 648),
+        ("robustness", 648),
+        ("execute", 252),
+        ("holdout_evidence", 252),
+    ]
+    assert sum(1 for name, _ in events if name == "selection") == 1
+    assert output["data"]["items"][0]["sealed_holdout"]["passed"] is True
+
+
+def test_eligible_strategy_publishes_only_after_holdout_passes(monkeypatch, tmp_path):
     publish_calls = []
     promotion_calls = []
+    events = []
 
     def publish(**kwargs):
+        events.append(("publish", 0))
         publish_calls.append(kwargs)
         return {
             "status": "success",
@@ -326,6 +455,7 @@ def test_eligible_strategy_publishes_then_reaches_robustness(monkeypatch, tmp_pa
         }
 
     def promote(*args, **kwargs):
+        events.append(("promotion", 0))
         promotion_calls.append(kwargs)
         return {
             "promotion_id": "promotion-1",
@@ -340,6 +470,7 @@ def test_eligible_strategy_publishes_then_reaches_robustness(monkeypatch, tmp_pa
         selected=selection(),
         publish=publish,
         promote=promote,
+        events=events,
     )
 
     output = nested.run_nested_hourly_backtest(
@@ -349,18 +480,19 @@ def test_eligible_strategy_publishes_then_reaches_robustness(monkeypatch, tmp_pa
     assert output["status"] == "success"
     assert output["data"]["published_count"] == 1
     assert output["data"]["promoted_count"] == 1
-    assert output["data"]["maximum_backtest_owned_state"] == "ROBUSTNESS_PASSED"
+    assert events.index(("holdout_evidence", 252)) < events.index(("publish", 0))
+    assert events.index(("publish", 0)) < events.index(("promotion", 0))
     item = output["data"]["items"][0]
     assert item["promotion_state"] == "ROBUSTNESS_PASSED"
     metadata = publish_calls[0]["metadata"]
     assert metadata["immutable_evidence_snapshot"] is True
-    assert metadata["statistical_schema_version"] == nested.STATISTICAL_VALIDATION_V2
-    assert metadata["statistical_evidence"]["passed"] is True
-    assert metadata["robustness_validation"]["passed"] is True
+    assert metadata["validation_profile"] == "nested_walk_forward_v3"
+    assert metadata["sealed_holdout"]["passed"] is True
+    assert metadata["research_dataset_fingerprint"] == "d" * 64
     assert promotion_calls[0]["run_id"] == publish_calls[0]["run_id"]
 
 
-def test_publish_or_lifecycle_failure_prevents_false_green(monkeypatch, tmp_path):
+def test_lifecycle_failure_prevents_false_green(monkeypatch, tmp_path):
     monkeypatch.setenv("PUBLISH_TO_DATABASE", "true")
     configure_runtime(
         monkeypatch,

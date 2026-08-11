@@ -116,7 +116,7 @@ def _criteria():
 
 def test_new_production_promotion_rejects_statistical_v1_authority():
     with pytest.raises(RuntimeError, match="statistical-validation.v2"):
-        hourly._promotion_metadata(
+        hourly._pre_holdout_metadata(
             _selection(),
             _statistical(STATISTICAL_VALIDATION_V1),
             _robustness(),
@@ -124,8 +124,8 @@ def test_new_production_promotion_rejects_statistical_v1_authority():
         )
 
 
-def test_new_production_promotion_accepts_complete_statistical_v2_authority():
-    metadata = hourly._promotion_metadata(
+def test_pre_holdout_gate_accepts_complete_statistical_v2_authority():
+    metadata = hourly._pre_holdout_metadata(
         _selection(),
         _statistical(STATISTICAL_VALIDATION_V2),
         _robustness(),
@@ -138,10 +138,12 @@ def test_new_production_promotion_accepts_complete_statistical_v2_authority():
 
 def test_run_identity_changes_with_statistical_schema_version():
     base = {
-        "evidence_version": 2,
+        "evidence_version": 3,
         "walk_forward_criteria": {"train_bars": 126},
         "statistical_criteria": {"bootstrap_method": "stationary"},
         "robustness_validation": {"criteria": {"min_scenario_pass_rate": 0.8}},
+        "final_holdout_criteria": {"enabled": True, "bars": 252},
+        "sealed_holdout": {"dataset_fingerprint": "h" * 64},
     }
     v1 = {**base, "statistical_schema_version": STATISTICAL_VALIDATION_V1}
     v2 = {**base, "statistical_schema_version": STATISTICAL_VALIDATION_V2}
@@ -149,6 +151,7 @@ def test_run_identity_changes_with_statistical_schema_version():
         "symbol": "AAPL",
         "strategy_id": "strategy-a",
         "fingerprint": "f" * 64,
+        "research_fingerprint": "r" * 64,
         "effective_parameters": {"fast_window": 10, "slow_window": 30},
         "timeframe": "1d",
     }

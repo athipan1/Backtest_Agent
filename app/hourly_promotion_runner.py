@@ -184,6 +184,63 @@ def _selected_candidate(request: WalkForwardMultiStrategyRequest, strategy_id: s
     raise RuntimeError(f"selected strategy not found in request candidates: {strategy_id}")
 
 
+def _rate(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    rate = float(value)
+    if rate < 0.0 or rate > 1.0:
+        return None
+    return rate
+
+
+def _abstention_policy_evidence(
+    evidence: dict[str, Any],
+    criteria: dict[str, Any],
+) -> dict[str, Any]:
+    nested_gates = evidence.get("gates") or {}
+    eligible_rate = _rate(evidence.get("eligible_selection_rate"))
+    if eligible_rate is None:
+        eligible_rate = _rate(evidence.get("train_eligible_window_rate"))
+
+    abstention_rate = _rate(evidence.get("abstention_rate"))
+    if abstention_rate is None and eligible_rate is not None:
+        abstention_rate = round(1.0 - eligible_rate, 6)
+
+    capital_deployed_rate = _rate(evidence.get("capital_deployed_rate"))
+    if capital_deployed_rate is None:
+        capital_deployed_rate = eligible_rate
+
+    explicit_abstention_gate = nested_gates.get("max_abstention_rate")
+    if isinstance(explicit_abstention_gate, bool):
+        abstention_policy_passed = explicit_abstention_gate
+    else:
+        maximum = _rate(criteria.get("max_abstention_rate"))
+        abstention_policy_passed = (
+            abstention_rate is not None
+            and maximum is not None
+            and abstention_rate <= maximum
+        )
+
+    explicit_eligible_gate = nested_gates.get("eligible_selection_rate")
+    if isinstance(explicit_eligible_gate, bool):
+        eligible_selection_policy_passed = explicit_eligible_gate
+    else:
+        minimum = _rate(criteria.get("min_eligible_selection_rate"))
+        eligible_selection_policy_passed = (
+            eligible_rate is not None
+            and minimum is not None
+            and eligible_rate >= minimum
+        )
+
+    return {
+        "eligible_selection_rate": eligible_rate,
+        "abstention_rate": abstention_rate,
+        "capital_deployed_rate": capital_deployed_rate,
+        "abstention_policy_passed": abstention_policy_passed,
+        "eligible_selection_policy_passed": eligible_selection_policy_passed,
+    }
+
+
 def _promotion_metadata(
     selection: Any,
     statistical_evidence: Any,
@@ -200,15 +257,15 @@ def _promotion_metadata(
     robustness = robustness_evidence.model_dump(mode="json")
     selected_strategy_id = selection.best_eligible.strategy_id
     latest_strategy_id = str(evidence.get("latest_selected_strategy_id") or "")
-    nested_gates = evidence.get("gates") or {}
+    abstention = _abstention_policy_evidence(evidence, criteria)
     gates = {
         "nested_validation_passed": evidence.get("passed") is True,
         "latest_selection_eligible": evidence.get("latest_selection_eligible") is True,
         "exact_strategy_match": latest_strategy_id == selected_strategy_id,
         "independent_test_windows": evidence.get("overlapping_test_windows") is False,
-        "abstention_policy_passed": nested_gates.get("max_abstention_rate") is True,
+        "abstention_policy_passed": abstention["abstention_policy_passed"] is True,
         "eligible_selection_policy_passed": (
-            nested_gates.get("eligible_selection_rate") is True
+            abstention["eligible_selection_policy_passed"] is True
         ),
         "statistical_validation_enabled": statistical_policy.get("enabled") is True,
     }
@@ -242,13 +299,13 @@ def _promotion_metadata(
         "walk_forward_train_eligible_window_rate": evidence.get(
             "train_eligible_window_rate"
         ),
-        "walk_forward_eligible_selection_rate": evidence.get(
+        "walk_forward_eligible_selection_rate": abstention[
             "eligible_selection_rate"
-        ),
-        "walk_forward_abstention_rate": evidence.get("abstention_rate"),
-        "walk_forward_capital_deployed_rate": evidence.get(
+        ],
+        "walk_forward_abstention_rate": abstention["abstention_rate"],
+        "walk_forward_capital_deployed_rate": abstention[
             "capital_deployed_rate"
-        ),
+        ],
         "walk_forward_trade_windows": evidence.get("trade_windows"),
         "walk_forward_no_trade_windows": evidence.get("no_trade_windows"),
         "walk_forward_median_sharpe_ratio": evidence.get("median_sharpe_ratio"),

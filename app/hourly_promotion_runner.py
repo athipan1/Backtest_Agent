@@ -69,6 +69,12 @@ def _default_date_range() -> tuple[str, str]:
 
 
 def _walk_forward_criteria() -> dict[str, Any]:
+    legacy_minimum = os.getenv("BACKTEST_WALK_FORWARD_MIN_TRAIN_ELIGIBLE_RATE")
+    eligible_minimum = float(
+        os.getenv("BACKTEST_WALK_FORWARD_MIN_ELIGIBLE_SELECTION_RATE")
+        or legacy_minimum
+        or "0.50"
+    )
     return {
         "train_bars": int(os.getenv("BACKTEST_WALK_FORWARD_TRAIN_BARS", "126")),
         "test_bars": int(os.getenv("BACKTEST_WALK_FORWARD_TEST_BARS", "126")),
@@ -81,8 +87,10 @@ def _walk_forward_criteria() -> dict[str, Any]:
         "min_window_trades": int(
             os.getenv("BACKTEST_WALK_FORWARD_MIN_WINDOW_TRADES", "1")
         ),
-        "min_train_eligible_window_rate": float(
-            os.getenv("BACKTEST_WALK_FORWARD_MIN_TRAIN_ELIGIBLE_RATE", "0.50")
+        "min_train_eligible_window_rate": eligible_minimum,
+        "min_eligible_selection_rate": eligible_minimum,
+        "max_abstention_rate": float(
+            os.getenv("BACKTEST_WALK_FORWARD_MAX_ABSTENTION_RATE", "0.50")
         ),
         "min_profitable_window_rate": float(
             os.getenv("BACKTEST_WALK_FORWARD_MIN_PROFITABLE_RATE", "0.60")
@@ -192,11 +200,16 @@ def _promotion_metadata(
     robustness = robustness_evidence.model_dump(mode="json")
     selected_strategy_id = selection.best_eligible.strategy_id
     latest_strategy_id = str(evidence.get("latest_selected_strategy_id") or "")
+    nested_gates = evidence.get("gates") or {}
     gates = {
         "nested_validation_passed": evidence.get("passed") is True,
         "latest_selection_eligible": evidence.get("latest_selection_eligible") is True,
         "exact_strategy_match": latest_strategy_id == selected_strategy_id,
         "independent_test_windows": evidence.get("overlapping_test_windows") is False,
+        "abstention_policy_passed": nested_gates.get("max_abstention_rate") is True,
+        "eligible_selection_policy_passed": (
+            nested_gates.get("eligible_selection_rate") is True
+        ),
         "statistical_validation_enabled": statistical_policy.get("enabled") is True,
     }
     if evidence.get("selection_method") != SELECTION_METHOD:
@@ -218,7 +231,7 @@ def _promotion_metadata(
         raise RuntimeError("nested promotion gates failed: " + ", ".join(failed))
     return {
         "validation_profile": VALIDATION_PROFILE,
-        "evidence_version": 1,
+        "evidence_version": 2,
         "selection_method": SELECTION_METHOD,
         "walk_forward_required": True,
         "walk_forward_passed": True,
@@ -229,6 +242,15 @@ def _promotion_metadata(
         "walk_forward_train_eligible_window_rate": evidence.get(
             "train_eligible_window_rate"
         ),
+        "walk_forward_eligible_selection_rate": evidence.get(
+            "eligible_selection_rate"
+        ),
+        "walk_forward_abstention_rate": evidence.get("abstention_rate"),
+        "walk_forward_capital_deployed_rate": evidence.get(
+            "capital_deployed_rate"
+        ),
+        "walk_forward_trade_windows": evidence.get("trade_windows"),
+        "walk_forward_no_trade_windows": evidence.get("no_trade_windows"),
         "walk_forward_median_sharpe_ratio": evidence.get("median_sharpe_ratio"),
         "walk_forward_median_profit_factor": evidence.get("median_profit_factor"),
         "walk_forward_worst_max_drawdown": evidence.get("worst_max_drawdown"),

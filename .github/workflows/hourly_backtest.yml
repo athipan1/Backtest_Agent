@@ -5,6 +5,14 @@ on:
     - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: "Backtest runtime mode; legacy_fixed is research/manual only"
+        required: false
+        type: choice
+        default: "nested_promotion"
+        options:
+          - nested_promotion
+          - legacy_fixed
       symbol:
         description: "Legacy single symbol (used when symbols is blank)"
         required: false
@@ -30,6 +38,8 @@ permissions:
   contents: read
 
 env:
+  BACKTEST_MODE: ${{ github.event_name == 'schedule' && 'nested_promotion' || github.event.inputs.mode || 'nested_promotion' }}
+  BACKTEST_ENVIRONMENT: ${{ github.event_name == 'schedule' && 'production' || 'research' }}
   BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
   BACKTEST_SYMBOL: ${{ github.event.inputs.symbol || vars.BACKTEST_SYMBOL || 'AAPL' }}
   BACKTEST_SYMBOLS: ${{ github.event.inputs.symbols || vars.BACKTEST_SYMBOLS || github.event.inputs.symbol || vars.BACKTEST_SYMBOL || 'AAPL' }}
@@ -81,10 +91,10 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
           cache: pip
@@ -107,7 +117,7 @@ jobs:
         run: python scripts/run_hourly_backtest.py
 
       - name: Upload backtest report
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: hourly-backtest-report

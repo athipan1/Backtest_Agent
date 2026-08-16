@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.market_regime_candidate_policy import (
+    _context_path,
     apply_runtime_market_regime_candidate_policy,
     resolve_market_regime_candidate_policy,
 )
@@ -54,6 +55,35 @@ def test_missing_market_context_preserves_balanced_default(tmp_path: Path):
     assert policy.applied is False
     assert policy.reason == "market_context_not_available"
     assert candidates == ()
+
+
+def test_context_path_finds_manager_report_in_sibling_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workspace = tmp_path / "workspace"
+    backtest_root = workspace / "Backtest_Agent"
+    manager_reports = workspace / "Manager_Agent" / "reports"
+    backtest_root.mkdir(parents=True)
+    manager_reports.mkdir(parents=True)
+    expected = manager_reports / "hourly-position-review.json"
+    expected.write_text("{}", encoding="utf-8")
+    monkeypatch.chdir(backtest_root)
+    monkeypatch.delenv("BACKTEST_MARKET_CONTEXT_PATH", raising=False)
+
+    resolved = _context_path()
+
+    assert resolved.resolve() == expected.resolve()
+
+
+def test_explicit_context_path_remains_authoritative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    configured = tmp_path / "configured.json"
+    monkeypatch.setenv("BACKTEST_MARKET_CONTEXT_PATH", str(configured))
+
+    assert _context_path() == configured
 
 
 def test_bull_context_filters_only_blocked_balanced_candidate(tmp_path: Path):
@@ -146,7 +176,9 @@ def test_runtime_hook_filters_request_and_binds_policy_to_evidence_identity(
         timeframe="1d",
         promotion_metadata={},
     )
-    published = runner.publish_backtest_result(metadata={"selection_profile": "balanced_v1"})
+    published = runner.publish_backtest_result(
+        metadata={"selection_profile": "balanced_v1"}
+    )
 
     assert policy.applied is True
     assert [candidate.strategy for candidate in request.candidates] == [

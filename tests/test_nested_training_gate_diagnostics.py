@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from scripts.diagnose_nested_training_gates import diagnose_payload, load_console_payload
+import pytest
+
+from scripts.diagnose_nested_training_gates import (
+    diagnose_payload,
+    load_console_payload,
+    main,
+    render_markdown,
+)
 
 
 def _metrics(*, trades=12, annualized_return=0.08, sharpe=1.1, profit_factor=1.5, excess=0.02):
@@ -138,3 +146,82 @@ def test_loader_accepts_runtime_event_line_followed_by_pretty_json(tmp_path: Pat
 
     assert loaded["status"] == "success"
     assert loaded["data"]["items"][0]["selection"]["symbol"] == "ALL"
+
+
+def test_loader_accepts_plain_json_and_rejects_empty_or_event_only(tmp_path: Path):
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps(_payload()), encoding="utf-8")
+    assert load_console_payload(plain)["status"] == "success"
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("  \n", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        load_console_payload(empty)
+
+    event_only = tmp_path / "event-only.json"
+    event_only.write_text(json.dumps({"event": "backtest_runtime_mode"}) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no result payload"):
+        load_console_payload(event_only)
+
+
+def test_render_markdown_reports_failures_and_safe_no_failure_case():
+    report = diagnose_payload(_payload())
+    markdown = render_markdown(report)
+
+    assert "Nested Training Gate Diagnostics" in markdown
+    assert "`trade_count`" in markdown
+    assert "Window 1" in markdown
+    assert "mean-reversion" in markdown
+    assert "does not change selection thresholds" in markdown
+
+    empty_report = diagnose_payload({"data": {"items": [None, {}, {"selection": {}}]}})
+    empty_markdown = render_markdown(empty_report)
+    assert "No performance-gate failures found." in empty_markdown
+    assert empty_report["aggregate"]["symbol_count"] == 0
+
+
+def test_diagnostic_skips_malformed_ranked_rows_and_unknown_nested_window():
+    payload = _payload()
+    selection = payload["data"]["items"][0]["selection"]
+    selection["ranked_results"].extend(
+        [
+            None,
+            {"strategy_id": "broken", "walk_forward": {"windows": [None, {"window": None}, {"window": 3, "train_metrics": None}]}},
+        ]
+    )
+    selection["nested_walk_forward"]["windows"].append({"window": 3, "warnings": "not-a-list"})
+
+    report = diagnose_payload(payload)
+    window3 = report["items"][0]["windows"][2]
+
+    assert window3["window"] == 3
+    assert window3["nested_decision"] == "UNKNOWN"
+    assert window3["closest_candidate"] is None
+    assert window3["nested_warnings"] == []
+
+
+def test_cli_writes_json_and_markdown_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    source = tmp_path / "console.json"
+    output = tmp_path / "diagnostic.json"
+    markdown = tmp_path / "diagnostic.md"
+    source.write_text(json.dumps(_payload()), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "diagnose_nested_training_gates.py",
+            "--input",
+            str(source),
+            "--output",
+            str(output),
+            "--markdown",
+            str(markdown),
+        ],
+    )
+
+    assert main() == 0
+    assert output.exists()
+    assert markdown.exists()
+    assert json.loads(output.read_text(encoding="utf-8"))["aggregate"]["symbol_count"] == 1
+    assert "Nested Training Gate Diagnostics" in markdown.read_text(encoding="utf-8")
+    assert "symbol_count" in capsys.readouterr().out

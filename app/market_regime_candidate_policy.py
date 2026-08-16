@@ -16,6 +16,7 @@ _SUPPORTED_STRATEGIES = {
     "breakout",
 }
 _DEFAULT_CONTEXT_PATH = Path("reports/hourly-position-review.json")
+_MANAGER_CONTEXT_RELATIVE_PATH = Path("Manager_Agent/reports/hourly-position-review.json")
 _POLICY_SCHEMA = "market-regime-candidate-policy.v1"
 
 
@@ -52,9 +53,37 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
 def _context_path() -> Path:
     configured = os.getenv("BACKTEST_MARKET_CONTEXT_PATH", "").strip()
-    return Path(configured) if configured else _DEFAULT_CONTEXT_PATH
+    if configured:
+        return Path(configured)
+
+    cwd = Path.cwd()
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = _unique_paths(
+        [
+            _DEFAULT_CONTEXT_PATH,
+            cwd / _DEFAULT_CONTEXT_PATH,
+            cwd.parent / _MANAGER_CONTEXT_RELATIVE_PATH,
+            repo_root.parent / _MANAGER_CONTEXT_RELATIVE_PATH,
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def _policy_id(payload: dict[str, Any]) -> str:
@@ -161,19 +190,16 @@ def resolve_market_regime_candidate_policy(
         ),
         allowed_strategies=allowed,
         candidate_ids=candidate_ids,
-        source_path=str(source),
+        source_path=str(source.resolve(strict=False)),
         source_gate_version=(str(gate.get("gate_version") or "") or None),
     )
     return policy, candidates
 
 
-def apply_runtime_market_regime_candidate_policy(runner_module: Any) -> MarketRegimeCandidatePolicy:
-    """Inject a trusted Manager regime allow-list without relaxing any Backtest gate.
-
-    The hook is deliberately limited to the production entrypoint. The underlying
-    request model, scoring, nested walk-forward, statistical validation and sealed
-    holdout logic are left unchanged.
-    """
+def apply_runtime_market_regime_candidate_policy(
+    runner_module: Any,
+) -> MarketRegimeCandidatePolicy:
+    """Inject a trusted Manager regime allow-list without relaxing any Backtest gate."""
 
     policy, candidates = resolve_market_regime_candidate_policy()
     setattr(runner_module, "MARKET_REGIME_CANDIDATE_POLICY", policy.as_dict())
@@ -197,7 +223,9 @@ def apply_runtime_market_regime_candidate_policy(runner_module: Any) -> MarketRe
     def policy_run_id(**kwargs: Any) -> str:
         policy_id = policy.policy_id
         if not policy_id:
-            raise RuntimeError("Applied Market Regime candidate policy is missing policy_id")
+            raise RuntimeError(
+                "Applied Market Regime candidate policy is missing policy_id"
+            )
         identity_strategy = f"{kwargs['strategy_id']}::candidate-policy={policy_id}"
         return original_run_id(**{**kwargs, "strategy_id": identity_strategy})
 

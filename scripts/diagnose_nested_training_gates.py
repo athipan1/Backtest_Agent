@@ -30,6 +30,8 @@ def load_console_payload(path: Path) -> dict[str, Any]:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("Backtest console JSON root must be an object")
+        if payload.get("event") and "data" not in payload and "status" not in payload:
+            raise ValueError("Backtest console contains no result payload")
         return payload
     except json.JSONDecodeError:
         decoder = json.JSONDecoder()

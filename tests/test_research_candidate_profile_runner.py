@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from app import hourly_promotion_runner
-from app.multi_strategy_walk_forward import WalkForwardMultiStrategyRequest
 from scripts.run_research_candidate_profile import run_research_profile
 
 
@@ -25,14 +24,7 @@ def test_research_runner_injects_profile_and_disables_publish_and_promotion(
 
     def fake_nested(report_path: Path):
         request = hourly_promotion_runner.WalkForwardMultiStrategyRequest(
-            symbols=["ALL"],
-            bars={"ALL": []},
-            walk_forward={
-                "train_bars": 126,
-                "test_bars": 126,
-                "step_bars": 126,
-                "min_windows": 4,
-            },
+            **hourly_promotion_runner._request_kwargs(symbol="ALL", bars=[])
         )
         observed["candidate_ids"] = [
             candidate.strategy_id for candidate in request.candidates

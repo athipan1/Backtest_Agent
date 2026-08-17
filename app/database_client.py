@@ -41,6 +41,15 @@ def _bounded_int_env(
     return max(minimum, min(maximum, value))
 
 
+def _normalize_base_url(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    if not normalized:
+        return ""
+    if not normalized.startswith(("http://", "https://")):
+        normalized = f"https://{normalized}"
+    return normalized
+
+
 class DatabaseAgentClient:
     """HTTP client for immutable Backtest evidence and promotion attestations.
 
@@ -57,7 +66,12 @@ class DatabaseAgentClient:
         reconciliation_attempts: Optional[int] = None,
         reconciliation_backoff_seconds: Optional[float] = None,
     ) -> None:
-        self.base_url = (base_url or os.getenv("DATABASE_AGENT_URL") or "").rstrip("/")
+        configured_base_url = (
+            os.getenv("DATABASE_AGENT_URL", "")
+            if base_url is None
+            else base_url
+        )
+        self.base_url = _normalize_base_url(configured_base_url)
         self.api_key = (
             api_key
             if api_key is not None

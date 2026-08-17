@@ -175,3 +175,38 @@ jobs:
           done
           docker logs backtest-agent-ci
           exit 1
+
+  database-integration:
+    name: Database_Agent integration
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
+      DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+    steps:
+      - name: Validate Database_Agent secrets
+        run: |
+          test -n "$DATABASE_AGENT_URL" || { echo "DATABASE_AGENT_URL is not configured"; exit 1; }
+          test -n "$DATABASE_AGENT_API_KEY" || { echo "DATABASE_AGENT_API_KEY is not configured"; exit 1; }
+          case "$DATABASE_AGENT_URL" in
+            http://*|https://*) ;;
+            *) echo "DATABASE_AGENT_URL must be an absolute http(s) URL"; exit 1 ;;
+          esac
+
+      - name: Check Database_Agent readiness
+        run: |
+          base_url="${DATABASE_AGENT_URL%/}"
+          status="$(curl --silent --show-error --output /tmp/database-ready.json --write-out '%{http_code}' "$base_url/ready")"
+          cat /tmp/database-ready.json
+          test "$status" = "200" || { echo "Database_Agent /ready returned HTTP $status"; exit 1; }
+
+      - name: Check authenticated backtest route
+        run: |
+          base_url="${DATABASE_AGENT_URL%/}"
+          probe_id="backtest-connection-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          status="$(curl --silent --show-error --output /tmp/database-probe.json --write-out '%{http_code}' \
+            -H "X-API-KEY: $DATABASE_AGENT_API_KEY" \
+            -H "X-Correlation-ID: $probe_id" \
+            "$base_url/backtests/runs/$probe_id")"
+          cat /tmp/database-probe.json
+          test "$status" = "404" || { echo "Authenticated backtest probe returned HTTP $status"; exit 1; }
+          echo "Database_Agent readiness and authenticated backtest route probe passed"

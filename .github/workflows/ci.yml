@@ -104,9 +104,6 @@ jobs:
             scripts/run_nested_hourly_backtest.py
 
       - name: Bandit
-        # B311 is intentionally excluded only for seeded, reproducible Monte
-        # Carlo and bootstrap simulations. These values are never used for
-        # credentials, tokens, identifiers, signatures, or security decisions.
         run: python -m bandit -q -r app scripts -s B311
 
       - name: Dependency vulnerability audit
@@ -183,30 +180,29 @@ jobs:
       DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
       DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
     steps:
-      - name: Validate Database_Agent secrets
+      - name: Normalize Database_Agent URL
         run: |
           test -n "$DATABASE_AGENT_URL" || { echo "DATABASE_AGENT_URL is not configured"; exit 1; }
           test -n "$DATABASE_AGENT_API_KEY" || { echo "DATABASE_AGENT_API_KEY is not configured"; exit 1; }
           case "$DATABASE_AGENT_URL" in
-            http://*|https://*) ;;
-            *) echo "DATABASE_AGENT_URL must be an absolute http(s) URL"; exit 1 ;;
+            http://*|https://*) normalized="${DATABASE_AGENT_URL%/}" ;;
+            *) normalized="https://${DATABASE_AGENT_URL%/}" ;;
           esac
+          echo "DATABASE_AGENT_URL=$normalized" >> "$GITHUB_ENV"
 
       - name: Check Database_Agent readiness
         run: |
-          base_url="${DATABASE_AGENT_URL%/}"
-          status="$(curl --silent --show-error --output /tmp/database-ready.json --write-out '%{http_code}' "$base_url/ready")"
+          status="$(curl --silent --show-error --output /tmp/database-ready.json --write-out '%{http_code}' "$DATABASE_AGENT_URL/ready")"
           cat /tmp/database-ready.json
           test "$status" = "200" || { echo "Database_Agent /ready returned HTTP $status"; exit 1; }
 
       - name: Check authenticated backtest route
         run: |
-          base_url="${DATABASE_AGENT_URL%/}"
           probe_id="backtest-connection-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           status="$(curl --silent --show-error --output /tmp/database-probe.json --write-out '%{http_code}' \
             -H "X-API-KEY: $DATABASE_AGENT_API_KEY" \
             -H "X-Correlation-ID: $probe_id" \
-            "$base_url/backtests/runs/$probe_id")"
+            "$DATABASE_AGENT_URL/backtests/runs/$probe_id")"
           cat /tmp/database-probe.json
           test "$status" = "404" || { echo "Authenticated backtest probe returned HTTP $status"; exit 1; }
           echo "Database_Agent readiness and authenticated backtest route probe passed"

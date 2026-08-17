@@ -119,17 +119,16 @@ jobs:
         run: |
           python - <<'PY'
           import os
-          from urllib.parse import urlparse
 
           import httpx
 
-          base_url = os.getenv("DATABASE_AGENT_URL", "").strip().rstrip("/")
-          api_key = os.getenv("DATABASE_AGENT_API_KEY", "").strip()
+          from app.database_client import DatabaseAgentClient
+
+          client = DatabaseAgentClient()
+          base_url = client.base_url
+          api_key = client.api_key.strip()
           if not base_url:
               raise SystemExit("DATABASE_AGENT_URL is not configured")
-          parsed = urlparse(base_url)
-          if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-              raise SystemExit("DATABASE_AGENT_URL must be an absolute http(s) URL")
           if not api_key:
               raise SystemExit("DATABASE_AGENT_API_KEY is not configured")
 

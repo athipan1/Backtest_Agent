@@ -108,7 +108,57 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Run tests first
+        env:
+          BACKTEST_ENV: test
+          PUBLISH_TO_DATABASE: "false"
+          DATABASE_AGENT_URL: ""
+          DATABASE_AGENT_API_KEY: ""
         run: PYTHONPATH=. python -m pytest -q
+
+      - name: Verify Database_Agent connectivity
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse
+
+          import httpx
+
+          base_url = os.getenv("DATABASE_AGENT_URL", "").strip().rstrip("/")
+          api_key = os.getenv("DATABASE_AGENT_API_KEY", "").strip()
+          if not base_url:
+              raise SystemExit("DATABASE_AGENT_URL is not configured")
+          parsed = urlparse(base_url)
+          if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+              raise SystemExit("DATABASE_AGENT_URL must be an absolute http(s) URL")
+          if not api_key:
+              raise SystemExit("DATABASE_AGENT_API_KEY is not configured")
+
+          correlation_id = f"backtest-db-preflight-{os.getenv('GITHUB_RUN_ID', 'local')}"
+          headers = {
+              "X-API-KEY": api_key,
+              "X-Correlation-ID": correlation_id,
+          }
+
+          ready = httpx.get(f"{base_url}/ready", timeout=20.0)
+          if ready.status_code != 200:
+              raise SystemExit(
+                  f"Database_Agent /ready failed: HTTP {ready.status_code}: {ready.text[:500]}"
+              )
+
+          probe_id = f"backtest-connection-probe-{os.getenv('GITHUB_RUN_ID', 'local')}"
+          probe = httpx.get(
+              f"{base_url}/backtests/runs/{probe_id}",
+              headers=headers,
+              timeout=20.0,
+          )
+          if probe.status_code != 404:
+              raise SystemExit(
+                  "Database_Agent authenticated backtest probe failed: "
+                  f"HTTP {probe.status_code}: {probe.text[:500]}"
+              )
+
+          print("Database_Agent readiness and authenticated backtest route probe passed")
+          PY
 
       - name: Run hourly backtest
         env:

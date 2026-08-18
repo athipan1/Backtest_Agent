@@ -15,6 +15,7 @@ permissions:
   contents: read
 
 env:
+  PYTHONPATH: .
   BACKTEST_RESEARCH_PROFILE: strategy_research_v5
   BACKTEST_MAX_SYMBOLS: '10'
   BACKTEST_TIMEFRAME: '1d'

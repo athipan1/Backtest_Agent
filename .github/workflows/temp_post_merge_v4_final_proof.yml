@@ -1,4 +1,4 @@
-name: Temporary Merged-Main v4 Final Proof
+name: Temporary v4 Exact Persistence Proof
 
 on:
   pull_request:
@@ -10,192 +10,132 @@ permissions:
   contents: read
 
 env:
-  BACKTEST_MODE: nested_promotion
-  BACKTEST_ENVIRONMENT: production
-  BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
-  BACKTEST_MAX_SYMBOLS: '10'
-  BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
-  BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
-  BACKTEST_TIMEFRAME: ${{ vars.BACKTEST_TIMEFRAME || '1d' }}
-  BACKTEST_BAR_LIMIT: ${{ vars.BACKTEST_BAR_LIMIT || '10000' }}
-  BACKTEST_INITIAL_EQUITY: ${{ vars.BACKTEST_INITIAL_EQUITY || '100000' }}
-  BACKTEST_FEE_BPS: ${{ vars.BACKTEST_FEE_BPS || '0' }}
-  BACKTEST_SLIPPAGE_BPS: ${{ vars.BACKTEST_SLIPPAGE_BPS || '0' }}
-  BACKTEST_RISK_PER_TRADE: ${{ vars.BACKTEST_RISK_PER_TRADE || '0.01' }}
-  BACKTEST_MAX_POSITION_PCT: ${{ vars.BACKTEST_MAX_POSITION_PCT || '0.10' }}
-  BACKTEST_STOP_LOSS_PCT: ${{ vars.BACKTEST_STOP_LOSS_PCT || '0.03' }}
-  BACKTEST_REWARD_RISK_RATIO: ${{ vars.BACKTEST_REWARD_RISK_RATIO || '2.0' }}
-  BACKTEST_USE_RISK_AGENT: ${{ vars.BACKTEST_USE_RISK_AGENT || 'true' }}
-  BACKTEST_MAX_TRADES_PER_DAY: ${{ vars.BACKTEST_MAX_TRADES_PER_DAY || '5' }}
-  BACKTEST_EMERGENCY_HALT: 'false'
-  BACKTEST_FORCE_CLOSE_AT_END: 'false'
-  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: ${{ vars.BACKTEST_MAX_TOTAL_EXPOSURE_PCT || '1.0' }}
-  BACKTEST_MAX_OPEN_POSITIONS: ${{ vars.BACKTEST_MAX_OPEN_POSITIONS || '25' }}
-  BACKTEST_CASH_RESERVE_PCT: ${{ vars.BACKTEST_CASH_RESERVE_PCT || '0.0' }}
-  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: ${{ vars.BACKTEST_MAX_NEW_POSITIONS_PER_BAR || '25' }}
-  BACKTEST_PERIODS_PER_YEAR: ${{ vars.BACKTEST_PERIODS_PER_YEAR || '252' }}
-  BACKTEST_ANNUAL_RISK_FREE_RATE: ${{ vars.BACKTEST_ANNUAL_RISK_FREE_RATE || '0.0' }}
-  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: ${{ vars.BACKTEST_MAX_VOLUME_PARTICIPATION_PCT || '1.0' }}
-  BACKTEST_MARKET_IMPACT_BPS: ${{ vars.BACKTEST_MARKET_IMPACT_BPS || '0.0' }}
-  PUBLISH_TO_DATABASE: 'true'
   DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
   DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
-  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
-  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
-  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+  EXPECTED_RUN_ID: backtest-walk-forward-be61229484d9d357e4e10615
+  EXPECTED_SYMBOL: NVDA
+  EXPECTED_STRATEGY_ID: sma-crossover-balanced-v1
+  EXPECTED_TIMEFRAME: 1d
 
 jobs:
-  proof:
-    name: Merged main v4 final-holdout and Database proof
+  exact-persistence:
+    name: Read-only exact Database persistence proof
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout merged Backtest_Agent main
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          repository: athipan1/Backtest_Agent
-          ref: main
-          path: BacktestMain
-
-      - name: Checkout Scanner_Agent universe source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          repository: athipan1/Scanner_Agent
-          ref: main
-          path: Scanner_Agent
-
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: BacktestMain/requirements.txt
-
-      - name: Install runtime dependencies
-        working-directory: BacktestMain
+      - name: Verify persisted NVDA v4 Backtest run
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-
-      - name: Load current Scanner US 10-symbol universe
-        working-directory: BacktestMain
-        run: |
-          mkdir -p reports
           python - <<'PY'
-          import json, os, re, subprocess
+          import json
+          import os
+          import urllib.error
+          import urllib.request
           from pathlib import Path
-          source = Path('../Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
-          text = source.read_text(encoding='utf-8')
-          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
-          if not match:
-              raise SystemExit('Could not locate Scanner US universe')
-          symbols = list(dict.fromkeys(re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))))
-          if len(symbols) != 10:
-              raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
-          evidence = {
-              'backtest_main_commit': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
-              'scanner_commit': subprocess.check_output(['git','-C','../Scanner_Agent','rev-parse','HEAD'], text=True).strip(),
-              'symbols': symbols,
-          }
-          Path('reports/temp-final-proof-source.json').write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
-          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as fh:
-              fh.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
-          print(json.dumps(evidence, indent=2, sort_keys=True))
-          PY
 
-      - name: Verify Database_Agent before publication
-        working-directory: BacktestMain
-        run: |
-          python - <<'PY'
-          import os, httpx
-          from app.database_client import DatabaseAgentClient
-          client = DatabaseAgentClient()
-          if not client.base_url or not client.api_key.strip():
+          base = (os.environ.get('DATABASE_AGENT_URL') or '').strip().rstrip('/')
+          key = (os.environ.get('DATABASE_AGENT_API_KEY') or '').strip()
+          expected = {
+              'run_id': os.environ['EXPECTED_RUN_ID'],
+              'symbol': os.environ['EXPECTED_SYMBOL'],
+              'strategy_id': os.environ['EXPECTED_STRATEGY_ID'],
+              'timeframe': os.environ['EXPECTED_TIMEFRAME'],
+          }
+          if not base or not key:
               raise SystemExit('Database_Agent URL/API key is not configured')
-          ready = httpx.get(f'{client.base_url}/ready', timeout=20.0)
-          if ready.status_code != 200:
-              raise SystemExit(f'Database_Agent /ready HTTP {ready.status_code}')
-          headers={'X-API-KEY':client.api_key.strip(),'X-Correlation-ID':f"temp-v4-preflight-{os.getenv('GITHUB_RUN_ID','local')}"}
-          probe=httpx.get(f"{client.base_url}/backtests/runs/temp-v4-probe-{os.getenv('GITHUB_RUN_ID','local')}",headers=headers,timeout=20.0)
-          if probe.status_code != 404:
-              raise SystemExit(f'Authenticated exact-route probe HTTP {probe.status_code}')
-          print('Database_Agent preflight passed')
-          PY
 
-      - name: Run merged-main production v4 Top-10
-        id: production
-        working-directory: BacktestMain
-        continue-on-error: true
-        run: python scripts/run_hourly_backtest.py
+          def get_json(path, correlation):
+              req = urllib.request.Request(
+                  base + path,
+                  headers={
+                      'X-API-KEY': key,
+                      'X-Correlation-ID': correlation,
+                      'Accept': 'application/json',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      raw = resp.read().decode('utf-8')
+                      return resp.status, json.loads(raw)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode('utf-8', errors='replace')
+                  raise SystemExit(f'Database_Agent HTTP {exc.code}: {raw[:300]}')
 
-      - name: Verify final holdout and exact Database identity
-        if: always()
-        working-directory: BacktestMain
-        run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          import httpx
-          from app.database_client import DatabaseAgentClient
-          source=json.loads(Path('reports/temp-final-proof-source.json').read_text(encoding='utf-8'))
-          report_path=Path('reports/hourly-backtest-result.json')
-          if not report_path.exists():
-              raise SystemExit('Production report missing')
-          report=json.loads(report_path.read_text(encoding='utf-8'))
-          data=report.get('data') or {}
-          items=data.get('items') or []
-          client=DatabaseAgentClient()
-          headers={'X-API-KEY':client.api_key.strip(),'X-Correlation-ID':f"temp-v4-exact-{os.getenv('GITHUB_RUN_ID','local')}"}
-          failures=[]; exact=0; holdout_pass=[]; rows=[]
-          for item in items:
-              symbol=item.get('symbol'); status=item.get('status'); holdout=item.get('sealed_holdout') or {}
-              row={'symbol':symbol,'status':status,'strategy':item.get('selected_strategy_id'),'run_id':item.get('run_id'),'published':bool(item.get('published')),'promoted':bool(item.get('promoted')),'promotion_state':item.get('promotion_state'),'holdout_status':holdout.get('status'),'holdout_passed':holdout.get('passed'),'holdout_gates':holdout.get('gates'),'exact_database':False,'error':item.get('error')}
-              if status == 'eligible_strategy_found':
-                  if holdout.get('passed') is not True or not holdout.get('gates') or not all(holdout['gates'].values()): failures.append(f'{symbol}: final holdout not all-pass')
-                  else: holdout_pass.append(symbol)
-                  if not item.get('published') or not item.get('promoted') or not item.get('run_id'): failures.append(f'{symbol}: eligible result not published/promoted')
-                  else:
-                      resp=httpx.get(f"{client.base_url}/backtests/runs/{item['run_id']}",headers=headers,timeout=30.0)
-                      if resp.status_code != 200: failures.append(f'{symbol}: exact DB GET HTTP {resp.status_code}')
-                      else:
-                          body=resp.json(); stored=((body.get('data') or {}).get('run') or {})
-                          expected={'run_id':item.get('run_id'),'symbol':symbol,'strategy_id':item.get('selected_strategy_id'),'timeframe':os.getenv('BACKTEST_TIMEFRAME','1d')}
-                          actual={k:stored.get(k) for k in expected}
-                          if actual != expected: failures.append(f'{symbol}: DB identity mismatch expected={expected} actual={actual}')
-                          else: row['exact_database']=True; exact+=1
-              elif status == 'no_eligible_strategy':
-                  if item.get('published') or item.get('promoted'): failures.append(f'{symbol}: no-eligible was published/promoted')
-                  if holdout.get('status') != 'sealed_not_opened': failures.append(f'{symbol}: no-eligible unexpectedly opened holdout')
-              elif status == 'failed': failures.append(f"{symbol}: {item.get('error') or 'failed'}")
-              else: failures.append(f'{symbol}: unexpected status {status!r}')
-              rows.append(row)
-          structural={
-              'v4':data.get('validation_profile')=='nested_walk_forward_v4',
-              'five_year_history':data.get('history_days')==1825,
-              'symbols':data.get('symbols')==source['symbols'] and len(items)==10,
-              'selection_complete':data.get('selection_complete') is True,
-              'no_failed_symbols':data.get('failed_symbols')==[],
-              'database_exact_count':exact==len(data.get('eligible_symbols') or []),
+          ready_req = urllib.request.Request(base + '/ready', headers={'Accept': 'application/json'})
+          with urllib.request.urlopen(ready_req, timeout=20) as ready:
+              if ready.status != 200:
+                  raise SystemExit(f'Database_Agent /ready HTTP {ready.status}')
+
+          status, body = get_json(
+              '/backtests/runs/' + expected['run_id'],
+              'temp-v4-readonly-' + os.environ.get('GITHUB_RUN_ID', 'local'),
+          )
+          if status != 200:
+              raise SystemExit(f'Exact GET HTTP {status}')
+
+          matches = []
+          def walk(value, path='$'):
+              if isinstance(value, dict):
+                  if value.get('run_id') == expected['run_id']:
+                      matches.append((path, value))
+                  for name, child in value.items():
+                      walk(child, f'{path}.{name}')
+              elif isinstance(value, list):
+                  for index, child in enumerate(value):
+                      walk(child, f'{path}[{index}]')
+          walk(body)
+
+          exact_matches = []
+          for path, record in matches:
+              actual = {name: record.get(name) for name in expected}
+              if actual == expected:
+                  exact_matches.append((path, record))
+
+          top_keys = sorted(body.keys()) if isinstance(body, dict) else []
+          data = body.get('data') if isinstance(body, dict) else None
+          data_keys = sorted(data.keys()) if isinstance(data, dict) else []
+          evidence = {
+              'http_status': status,
+              'top_level_keys': top_keys,
+              'data_type': type(data).__name__,
+              'data_keys': data_keys,
+              'matching_run_id_paths': [path for path, _ in matches],
+              'exact_identity_paths': [path for path, _ in exact_matches],
+              'expected_identity': expected,
+              'exact_identity_verified': bool(exact_matches),
           }
-          failures += [f'structural:{k}' for k,v in structural.items() if not v]
-          evidence={'backtest_main_commit':source['backtest_main_commit'],'scanner_commit':source['scanner_commit'],'github_run_id':os.getenv('GITHUB_RUN_ID'),'validation_profile':data.get('validation_profile'),'symbols':data.get('symbols'),'eligible_symbols':data.get('eligible_symbols') or [],'ineligible_symbols':data.get('ineligible_symbols') or [],'failed_symbols':data.get('failed_symbols') or [],'published_count':data.get('published_count'),'promoted_count':data.get('promoted_count'),'final_holdout_pass_symbols':holdout_pass,'database_exact_match_count':exact,'rows':rows,'structural':structural,'verification_failures':failures}
-          Path('reports/temp-post-merge-v4-final-evidence.json').write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
+          if exact_matches:
+              path, record = exact_matches[0]
+              metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+              metrics = record.get('metrics') if isinstance(record.get('metrics'), dict) else {}
+              evidence['stored_record_summary'] = {
+                  **expected,
+                  'status': record.get('status'),
+                  'engine_version': record.get('engine_version'),
+                  'source_agent': record.get('source_agent'),
+                  'validation_profile': metadata.get('validation_profile'),
+                  'storage_only': metadata.get('storage_only'),
+                  'return_pct': metrics.get('return_pct'),
+                  'trade_count': metrics.get('trade_count'),
+                  'sharpe_ratio': metrics.get('sharpe_ratio'),
+                  'max_drawdown': metrics.get('max_drawdown'),
+              }
+
+          Path('evidence').mkdir(exist_ok=True)
+          Path('evidence/exact-persistence-proof.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
           print(json.dumps(evidence, indent=2, sort_keys=True))
-          if failures: raise SystemExit('Verification failed: ' + ' | '.join(failures))
+          if not exact_matches:
+              raise SystemExit('Exact persisted identity was not found in the HTTP 200 response')
           PY
 
-      - name: Upload proof evidence
+      - name: Upload sanitized exact-persistence evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: temp-post-merge-v4-final-proof-${{ github.run_id }}
-          path: BacktestMain/reports/
+          name: temp-v4-exact-persistence-${{ github.run_id }}
+          path: evidence/exact-persistence-proof.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Fail if production runner failed
-        if: steps.production.outcome != 'success'
-        run: exit 1

@@ -1,0 +1,277 @@
+name: Nested Training Gate Diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_START: ''
+  BACKTEST_END: ''
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_FEE_BPS: '0'
+  BACKTEST_SLIPPAGE_BPS: '0'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '0.0'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  diagnose:
+    name: Production nested training gate diagnostics
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout Scanner_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Diagnose exact nested training gates
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          from app.data_provider import AlpacaMarketDataProvider
+          from app.final_holdout import split_sealed_final_holdout
+          from app.hourly_promotion_runner import (
+              DEFAULT_MINIMUM_BARS,
+              _default_date_range,
+              _final_holdout_criteria,
+              _request_kwargs,
+          )
+          from app.multi_strategy import run_multi_strategy_backtest
+          from app.multi_strategy_walk_forward import (
+              WalkForwardMultiStrategyRequest,
+              _window_slices,
+          )
+
+          scanner_path = Path('Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          scanner_text = scanner_path.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', scanner_text, re.S)
+          if not match:
+              raise SystemExit('Scanner US universe not found')
+          symbols = list(dict.fromkeys(re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))))
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected 10 Scanner US symbols, got {symbols}')
+
+          provider = AlpacaMarketDataProvider(
+              api_key=os.environ['ALPACA_API_KEY_ID'],
+              secret_key=os.environ['ALPACA_SECRET_KEY'],
+              base_url=os.getenv('ALPACA_DATA_API_URL', 'https://data.alpaca.markets'),
+              feed=os.getenv('ALPACA_DATA_FEED', 'iex'),
+          )
+          timeframe = os.getenv('BACKTEST_TIMEFRAME', '1d')
+          start, end = _default_date_range()
+          holdout_criteria = _final_holdout_criteria()
+          minimum_research_bars = DEFAULT_MINIMUM_BARS
+          minimum_bars = minimum_research_bars + holdout_criteria.bars
+
+          failure_counts = Counter()
+          failure_counts_by_family = Counter()
+          gate_evaluations = Counter()
+          gate_passes = Counter()
+          gate_failures_by_symbol: dict[str, Counter] = defaultdict(Counter)
+          rows = []
+
+          for symbol in symbols:
+              bars = provider.fetch_bars(
+                  symbol=symbol,
+                  timeframe=timeframe,
+                  start=start,
+                  end=end,
+                  minimum_bars=minimum_bars,
+                  limit=int(os.getenv('BACKTEST_BAR_LIMIT', '10000')),
+              )
+              research_bars, sealed_bars = split_sealed_final_holdout(
+                  bars,
+                  criteria=holdout_criteria,
+                  minimum_research_bars=minimum_research_bars,
+              )
+              request = WalkForwardMultiStrategyRequest(
+                  **_request_kwargs(symbol=symbol, bars=research_bars)
+              )
+              windows = _window_slices(request)
+              symbol_windows = []
+
+              for window_number, (train_slice, test_slice) in enumerate(windows, start=1):
+                  train_request = request.model_copy(
+                      deep=True,
+                      update={
+                          'bars': {symbol: train_slice},
+                          'force_close_at_end': True,
+                      },
+                  )
+                  selection = run_multi_strategy_backtest(train_request)
+                  candidates = []
+                  for item in selection.ranked_results:
+                      failed_gates = sorted(name for name, passed in item.gates.items() if not passed)
+                      performance_failed = [name for name in failed_gates if not name.startswith('statistical_')]
+                      statistical_failed = [name for name in failed_gates if name.startswith('statistical_')]
+                      for gate_name, passed in item.gates.items():
+                          gate_evaluations[gate_name] += 1
+                          if passed:
+                              gate_passes[gate_name] += 1
+                          else:
+                              failure_counts[gate_name] += 1
+                              gate_failures_by_symbol[symbol][gate_name] += 1
+                              family = 'statistical' if gate_name.startswith('statistical_') else 'performance'
+                              failure_counts_by_family[family] += 1
+                      candidates.append({
+                          'rank': item.rank,
+                          'strategy_id': item.strategy_id,
+                          'eligible': item.eligible,
+                          'score': item.score,
+                          'metrics': {
+                              'trade_count': item.metrics.trade_count,
+                              'annualized_return': item.metrics.annualized_return,
+                              'sharpe_ratio': item.metrics.sharpe_ratio,
+                              'profit_factor': item.metrics.profit_factor,
+                              'max_drawdown': item.metrics.max_drawdown,
+                              'benchmark_return_pct': item.metrics.benchmark_return_pct,
+                              'excess_return_pct': item.metrics.excess_return_pct,
+                              'return_pct': item.metrics.return_pct,
+                          },
+                          'failed_gates': failed_gates,
+                          'performance_failed_gates': performance_failed,
+                          'statistical_failed_gates': statistical_failed,
+                          'disqualification_reasons': item.disqualification_reasons,
+                          'statistical_status': item.statistical_evidence.status,
+                          'statistical_observation_count': item.statistical_evidence.observation_count,
+                          'statistical_trade_count': item.statistical_evidence.trade_count,
+                      })
+
+                  best = selection.best_overall
+                  symbol_windows.append({
+                      'window': window_number,
+                      'train_start': train_slice[0].timestamp.isoformat(),
+                      'train_end': train_slice[-1].timestamp.isoformat(),
+                      'train_bars': len(train_slice),
+                      'future_test_start': test_slice[0].timestamp.isoformat(),
+                      'future_test_end': test_slice[-1].timestamp.isoformat(),
+                      'future_test_bars': len(test_slice),
+                      'eligible_count': selection.eligible_count,
+                      'best_eligible_strategy_id': selection.best_eligible.strategy_id if selection.best_eligible else None,
+                      'best_overall_strategy_id': best.strategy_id if best else None,
+                      'best_overall_failed_gates': sorted(name for name, passed in (best.gates if best else {}).items() if not passed),
+                      'candidates': candidates,
+                  })
+
+              rows.append({
+                  'symbol': symbol,
+                  'bar_count': len(bars),
+                  'research_bar_count': len(research_bars),
+                  'sealed_holdout_bar_count': len(sealed_bars),
+                  'nested_window_count': len(windows),
+                  'windows': symbol_windows,
+                  'failed_gate_counts': dict(gate_failures_by_symbol[symbol].most_common()),
+              })
+
+          rates = {}
+          for gate, evaluations in sorted(gate_evaluations.items()):
+              passed = gate_passes[gate]
+              rates[gate] = {
+                  'evaluations': evaluations,
+                  'passes': passed,
+                  'failures': evaluations - passed,
+                  'pass_rate': round(passed / evaluations, 6) if evaluations else None,
+              }
+
+          evidence = {
+              'status': 'success',
+              'github_run_id': os.getenv('GITHUB_RUN_ID'),
+              'scanner_commit': subprocess.check_output(['git','-C','Scanner_Agent','rev-parse','HEAD'], text=True).strip(),
+              'symbols': symbols,
+              'production_profile': {
+                  'history_days': 1825,
+                  'train_bars': request.walk_forward_criteria.train_bars,
+                  'test_bars': request.walk_forward_criteria.test_bars,
+                  'step_bars': request.walk_forward_criteria.step_bars,
+                  'min_windows': request.walk_forward_criteria.min_windows,
+                  'max_position_pct': request.max_position_pct,
+                  'selection_criteria': request.selection_criteria.model_dump(mode='json'),
+                  'statistical_criteria': request.statistical_criteria.model_dump(mode='json'),
+              },
+              'decision_logic_changed': False,
+              'thresholds_relaxed': False,
+              'publish_to_database': False,
+              'total_training_windows': sum(row['nested_window_count'] for row in rows),
+              'total_candidate_evaluations': sum(gate_evaluations.values()) // max(len(rates), 1),
+              'gate_rates': rates,
+              'most_common_failed_gates': dict(failure_counts.most_common()),
+              'failure_family_counts': dict(failure_counts_by_family),
+              'rows': rows,
+          }
+          out = Path('reports/nested-training-gate-diagnostics.json')
+          out.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
+
+          print('=== Gate pass rates ===')
+          for gate, value in sorted(rates.items(), key=lambda pair: (pair[1]['pass_rate'], pair[0])):
+              print(f"{gate}: pass={value['passes']}/{value['evaluations']} rate={value['pass_rate']}")
+          print('=== Most common failed gates ===')
+          print(json.dumps(dict(failure_counts.most_common()), indent=2))
+          print('=== Best candidate failures by symbol/window ===')
+          for row in rows:
+              print(row['symbol'])
+              for window in row['windows']:
+                  print(
+                      f"  W{window['window']} eligible={window['eligible_count']} "
+                      f"best={window['best_overall_strategy_id']} "
+                      f"failed={window['best_overall_failed_gates']}"
+                  )
+          PY
+
+      - name: Upload gate diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: nested-training-gate-diagnostics-${{ github.run_id }}
+          path: reports/nested-training-gate-diagnostics.json
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,359 @@
+name: Inner Selection Safety Experiment
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_FEE_BPS: '0'
+  BACKTEST_SLIPPAGE_BPS: '0'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '0.0'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  experiment:
+    name: Safety-only inner selection with unchanged outer gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout Scanner_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run leakage-safe inner-selection experiment
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          from app.data_provider import AlpacaMarketDataProvider
+          from app.final_holdout import split_sealed_final_holdout
+          from app.hourly_promotion_runner import (
+              DEFAULT_MINIMUM_BARS,
+              _default_date_range,
+              _final_holdout_criteria,
+              _request_kwargs,
+          )
+          from app.multi_strategy import (
+              build_run_request,
+              resolve_strategy_id,
+              run_multi_strategy_backtest,
+          )
+          from app.multi_strategy_walk_forward import (
+              WalkForwardMultiStrategyRequest,
+              WalkForwardWindowResult,
+              _cash_hold_metrics,
+              _summarize_windows,
+              _window_slices,
+          )
+          from app.risk_engine import run_backtest_with_risk
+          from app.statistical_validation import run_statistical_validation
+
+          scanner_path = Path('Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          text = scanner_path.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
+          if not match:
+              raise SystemExit('Scanner US universe not found')
+          symbols = list(dict.fromkeys(re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))))
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected 10 Scanner US symbols, got {symbols}')
+
+          provider = AlpacaMarketDataProvider(
+              api_key=os.environ['ALPACA_API_KEY_ID'],
+              secret_key=os.environ['ALPACA_SECRET_KEY'],
+              base_url=os.getenv('ALPACA_DATA_API_URL', 'https://data.alpaca.markets'),
+              feed=os.getenv('ALPACA_DATA_FEED', 'iex'),
+          )
+          timeframe = os.getenv('BACKTEST_TIMEFRAME', '1d')
+          start, end = _default_date_range()
+          holdout_criteria = _final_holdout_criteria()
+          minimum_research_bars = DEFAULT_MINIMUM_BARS
+          minimum_bars = minimum_research_bars + holdout_criteria.bars
+          rows = []
+
+          for symbol in symbols:
+              bars = provider.fetch_bars(
+                  symbol=symbol,
+                  timeframe=timeframe,
+                  start=start,
+                  end=end,
+                  minimum_bars=minimum_bars,
+                  limit=int(os.getenv('BACKTEST_BAR_LIMIT', '10000')),
+              )
+              research_bars, sealed_bars = split_sealed_final_holdout(
+                  bars,
+                  criteria=holdout_criteria,
+                  minimum_research_bars=minimum_research_bars,
+              )
+              request = WalkForwardMultiStrategyRequest(
+                  **_request_kwargs(symbol=symbol, bars=research_bars)
+              )
+              candidate_map = {
+                  resolve_strategy_id(candidate, request): candidate
+                  for candidate in request.candidates
+              }
+              windows = []
+              window_evidence = []
+
+              for window_number, (train_slice, test_slice) in enumerate(_window_slices(request), start=1):
+                  train_request = request.model_copy(
+                      deep=True,
+                      update={'bars': {symbol: train_slice}, 'force_close_at_end': True},
+                  )
+                  selection = run_multi_strategy_backtest(train_request)
+
+                  safety_candidates = []
+                  for item in selection.ranked_results:
+                      safety_gates = {
+                          'trade_count': item.gates.get('trade_count') is True,
+                          'max_drawdown': item.gates.get('max_drawdown') is True,
+                          'kill_switch_safety': item.gates.get('kill_switch_safety') is True,
+                          'statistical_observation_count': item.gates.get('statistical_observation_count') is True,
+                      }
+                      if all(safety_gates.values()):
+                          safety_candidates.append(item)
+
+                  selected = safety_candidates[0] if safety_candidates else None
+                  if selected is None:
+                      windows.append(
+                          WalkForwardWindowResult(
+                              window=window_number,
+                              train_start=train_slice[0].timestamp.isoformat(),
+                              train_end=train_slice[-1].timestamp.isoformat(),
+                              test_start=test_slice[0].timestamp.isoformat(),
+                              test_end=test_slice[-1].timestamp.isoformat(),
+                              train_bars=len(train_slice),
+                              test_bars=len(test_slice),
+                              decision='NO_TRADE',
+                              selected_strategy_id=None,
+                              selected_strategy_name=None,
+                              train_selection_eligible=False,
+                              train_selection_score=None,
+                              train_metrics=None,
+                              capital_deployed=False,
+                              profitable=False,
+                              metrics=_cash_hold_metrics(request.initial_equity),
+                              warnings=['No candidate passed inner safety/data-sufficiency gates.'],
+                          )
+                      )
+                      window_evidence.append({
+                          'window': window_number,
+                          'decision': 'NO_TRADE',
+                          'selected_strategy_id': None,
+                          'safety_candidate_count': 0,
+                      })
+                      continue
+
+                  candidate = candidate_map[selected.strategy_id]
+                  test_request = build_run_request(candidate, request).model_copy(
+                      deep=True,
+                      update={'bars': {symbol: test_slice}, 'force_close_at_end': True},
+                  )
+                  test_result = run_backtest_with_risk(test_request)
+                  profitable = (
+                      test_result.metrics.trade_count >= request.walk_forward_criteria.min_window_trades
+                      and test_result.metrics.return_pct > 0
+                  )
+                  windows.append(
+                      WalkForwardWindowResult(
+                          window=window_number,
+                          train_start=train_slice[0].timestamp.isoformat(),
+                          train_end=train_slice[-1].timestamp.isoformat(),
+                          test_start=test_slice[0].timestamp.isoformat(),
+                          test_end=test_slice[-1].timestamp.isoformat(),
+                          train_bars=len(train_slice),
+                          test_bars=len(test_slice),
+                          decision='TRADE',
+                          selected_strategy_id=selected.strategy_id,
+                          selected_strategy_name=selected.name,
+                          train_selection_eligible=True,
+                          train_selection_score=selected.score,
+                          train_metrics=selected.metrics,
+                          capital_deployed=True,
+                          profitable=profitable,
+                          metrics=test_result.metrics,
+                          warnings=list(dict.fromkeys(selected.warnings + test_result.warnings)),
+                      )
+                  )
+                  window_evidence.append({
+                      'window': window_number,
+                      'decision': 'TRADE',
+                      'selected_strategy_id': selected.strategy_id,
+                      'safety_candidate_count': len(safety_candidates),
+                      'train_score': selected.score,
+                      'train_original_eligible': selected.eligible,
+                      'train_original_failed_gates': sorted(name for name, passed in selected.gates.items() if not passed),
+                      'future_test_metrics': {
+                          'trade_count': test_result.metrics.trade_count,
+                          'return_pct': test_result.metrics.return_pct,
+                          'sharpe_ratio': test_result.metrics.sharpe_ratio,
+                          'profit_factor': test_result.metrics.profit_factor,
+                          'max_drawdown': test_result.metrics.max_drawdown,
+                      },
+                      'future_test_profitable': profitable,
+                  })
+
+              nested = _summarize_windows(
+                  request=request,
+                  windows=windows,
+                  selection_method='nested_train_select_test_evaluate',
+              )
+              latest_id = nested.latest_selected_strategy_id if nested.latest_selection_eligible else None
+              research_stat = None
+              if nested.passed and latest_id:
+                  candidate = candidate_map[latest_id]
+                  research_request = build_run_request(candidate, request).model_copy(
+                      deep=True,
+                      update={'force_close_at_end': True},
+                  )
+                  research_result = run_backtest_with_risk(research_request)
+                  stat = run_statistical_validation(
+                      research_result,
+                      candidate_count=len(request.candidates),
+                      periods_per_year=request.periods_per_year,
+                      criteria=request.statistical_criteria,
+                  )
+                  research_stat = {
+                      'status': stat.status,
+                      'passed': stat.passed,
+                      'gates': stat.gates,
+                      'reasons': stat.reasons,
+                      'trade_count': research_result.metrics.trade_count,
+                      'return_pct': research_result.metrics.return_pct,
+                      'annualized_return': research_result.metrics.annualized_return,
+                      'sharpe_ratio': research_result.metrics.sharpe_ratio,
+                      'profit_factor': research_result.metrics.profit_factor,
+                      'max_drawdown': research_result.metrics.max_drawdown,
+                      'benchmark_return_pct': research_result.metrics.benchmark_return_pct,
+                      'excess_return_pct': research_result.metrics.excess_return_pct,
+                  }
+
+              rows.append({
+                  'symbol': symbol,
+                  'research_bar_count': len(research_bars),
+                  'sealed_holdout_bar_count': len(sealed_bars),
+                  'sealed_holdout_status': 'sealed_not_opened',
+                  'nested_passed': nested.passed,
+                  'nested_reasons': nested.reasons,
+                  'evaluated_windows': nested.evaluated_windows,
+                  'trade_windows': nested.trade_windows,
+                  'no_trade_windows': nested.no_trade_windows,
+                  'train_eligible_window_rate': nested.train_eligible_window_rate,
+                  'abstention_rate': nested.abstention_rate,
+                  'profitable_window_rate': nested.profitable_window_rate,
+                  'median_sharpe_ratio': nested.median_sharpe_ratio,
+                  'median_profit_factor': nested.median_profit_factor,
+                  'worst_max_drawdown': nested.worst_max_drawdown,
+                  'stability_score': nested.stability_score,
+                  'latest_selected_strategy_id': nested.latest_selected_strategy_id,
+                  'latest_selection_eligible': nested.latest_selection_eligible,
+                  'selection_counts': nested.selection_counts,
+                  'full_research_statistical_validation_if_nested_passed': research_stat,
+                  'windows': window_evidence,
+              })
+
+          evidence = {
+              'status': 'success',
+              'github_run_id': os.getenv('GITHUB_RUN_ID'),
+              'scanner_commit': subprocess.check_output(['git','-C','Scanner_Agent','rev-parse','HEAD'], text=True).strip(),
+              'symbols': symbols,
+              'experiment': {
+                  'inner_selection': 'existing score ranking among candidates passing trade_count + max_drawdown + kill_switch + statistical observation-count safety/data gates',
+                  'outer_nested_gates_changed': False,
+                  'promotion_statistical_gates_changed': False,
+                  'sealed_holdout_opened': False,
+                  'publish_to_database': False,
+                  'thresholds_relaxed_for_promotion': False,
+              },
+              'nested_pass_symbols': [row['symbol'] for row in rows if row['nested_passed']],
+              'nested_pass_count': sum(1 for row in rows if row['nested_passed']),
+              'full_research_stat_pass_symbols': [
+                  row['symbol'] for row in rows
+                  if row['full_research_statistical_validation_if_nested_passed']
+                  and row['full_research_statistical_validation_if_nested_passed']['passed']
+              ],
+              'rows': rows,
+          }
+          Path('reports/inner-selection-safety-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps({
+              'nested_pass_symbols': evidence['nested_pass_symbols'],
+              'nested_pass_count': evidence['nested_pass_count'],
+              'full_research_stat_pass_symbols': evidence['full_research_stat_pass_symbols'],
+              'summary': [
+                  {
+                      'symbol': row['symbol'],
+                      'nested_passed': row['nested_passed'],
+                      'trade_windows': row['trade_windows'],
+                      'profitable_window_rate': row['profitable_window_rate'],
+                      'median_sharpe_ratio': row['median_sharpe_ratio'],
+                      'stability_score': row['stability_score'],
+                      'latest_selected_strategy_id': row['latest_selected_strategy_id'],
+                      'research_stat_passed': (
+                          row['full_research_statistical_validation_if_nested_passed']['passed']
+                          if row['full_research_statistical_validation_if_nested_passed'] else None
+                      ),
+                  }
+                  for row in rows
+              ],
+          }, indent=2))
+          PY
+
+      - name: Upload experiment evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: inner-selection-safety-${{ github.run_id }}
+          path: reports/inner-selection-safety-evidence.json
+          if-no-files-found: error
+          retention-days: 30

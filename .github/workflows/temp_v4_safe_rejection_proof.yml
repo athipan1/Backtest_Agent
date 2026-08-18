@@ -1,0 +1,225 @@
+name: Temporary v4 Safe Rejection Production Proof
+
+on:
+  pull_request:
+    branches:
+      - agent/v4-safe-rejection-semantics
+    paths:
+      - '.github/workflows/temp_v4_safe_rejection_proof.yml'
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_MODE: nested_promotion
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
+  BACKTEST_MAX_SYMBOLS: '10'
+  BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
+  BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_INITIAL_EQUITY: ${{ vars.BACKTEST_INITIAL_EQUITY || '100000' }}
+  BACKTEST_FEE_BPS: ${{ vars.BACKTEST_FEE_BPS || '0' }}
+  BACKTEST_SLIPPAGE_BPS: ${{ vars.BACKTEST_SLIPPAGE_BPS || '0' }}
+  BACKTEST_RISK_PER_TRADE: ${{ vars.BACKTEST_RISK_PER_TRADE || '0.01' }}
+  BACKTEST_MAX_POSITION_PCT: ${{ vars.BACKTEST_MAX_POSITION_PCT || '0.10' }}
+  BACKTEST_STOP_LOSS_PCT: ${{ vars.BACKTEST_STOP_LOSS_PCT || '0.03' }}
+  BACKTEST_REWARD_RISK_RATIO: ${{ vars.BACKTEST_REWARD_RISK_RATIO || '2.0' }}
+  BACKTEST_USE_RISK_AGENT: ${{ vars.BACKTEST_USE_RISK_AGENT || 'true' }}
+  BACKTEST_MAX_TRADES_PER_DAY: ${{ vars.BACKTEST_MAX_TRADES_PER_DAY || '5' }}
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: ${{ vars.BACKTEST_MAX_TOTAL_EXPOSURE_PCT || '1.0' }}
+  BACKTEST_MAX_OPEN_POSITIONS: ${{ vars.BACKTEST_MAX_OPEN_POSITIONS || '25' }}
+  BACKTEST_CASH_RESERVE_PCT: ${{ vars.BACKTEST_CASH_RESERVE_PCT || '0.0' }}
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: ${{ vars.BACKTEST_MAX_NEW_POSITIONS_PER_BAR || '25' }}
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: ${{ vars.BACKTEST_ANNUAL_RISK_FREE_RATE || '0.0' }}
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: ${{ vars.BACKTEST_MAX_VOLUME_PARTICIPATION_PCT || '1.0' }}
+  BACKTEST_MARKET_IMPACT_BPS: ${{ vars.BACKTEST_MARKET_IMPACT_BPS || '0.0' }}
+  PUBLISH_TO_DATABASE: 'true'
+  DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
+  DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  proof:
+    name: Production Top-10 safe rejection semantics
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout exact PR 53 implementation commit
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Backtest_Agent
+          ref: 15c980f9409e784fd54c69b8f7b9c52b4107de60
+          path: Backtest_Agent
+
+      - name: Checkout Scanner_Agent universe source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          ref: main
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: Backtest_Agent/requirements.txt
+
+      - name: Install runtime dependencies
+        working-directory: Backtest_Agent
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Load current Scanner US 10-symbol universe
+        working-directory: Backtest_Agent
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          source = Path('../Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          text = source.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
+          if not match:
+              raise SystemExit('Could not locate Scanner US universe')
+          symbols = list(dict.fromkeys(re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))))
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
+          evidence = {
+              'backtest_commit': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
+              'scanner_commit': subprocess.check_output(['git','-C','../Scanner_Agent','rev-parse','HEAD'], text=True).strip(),
+              'symbols': symbols,
+          }
+          Path('reports/proof-source.json').write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as fh:
+              fh.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Database_Agent authenticated preflight
+        working-directory: Backtest_Agent
+        run: |
+          python - <<'PY'
+          import os, httpx
+          from app.database_client import DatabaseAgentClient
+          client = DatabaseAgentClient()
+          if not client.base_url or not client.api_key.strip():
+              raise SystemExit('Database_Agent URL/API key is not configured')
+          ready = httpx.get(f'{client.base_url}/ready', timeout=20.0)
+          if ready.status_code != 200:
+              raise SystemExit(f'Database_Agent /ready HTTP {ready.status_code}')
+          headers={'X-API-KEY':client.api_key.strip(),'X-Correlation-ID':f"v4-rejection-proof-{os.getenv('GITHUB_RUN_ID','local')}"}
+          probe=httpx.get(f"{client.base_url}/backtests/runs/v4-rejection-proof-{os.getenv('GITHUB_RUN_ID','local')}",headers=headers,timeout=20.0)
+          if probe.status_code != 404:
+              raise SystemExit(f'Authenticated exact-route probe HTTP {probe.status_code}')
+          print('Database_Agent preflight passed')
+          PY
+
+      - name: Run production v4 Top-10 with publication enabled
+        working-directory: Backtest_Agent
+        run: python scripts/run_hourly_backtest.py
+
+      - name: Verify safe rejection semantics and zero writes
+        working-directory: Backtest_Agent
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          source=json.loads(Path('reports/proof-source.json').read_text(encoding='utf-8'))
+          report=json.loads(Path('reports/hourly-backtest-result.json').read_text(encoding='utf-8'))
+          data=report.get('data') or {}
+          items=data.get('items') or []
+          failures=[]
+          by_symbol={item.get('symbol'):item for item in items if isinstance(item,dict)}
+
+          structural={
+              'status_success': report.get('status')=='success',
+              'v4_profile': data.get('validation_profile')=='nested_walk_forward_v4',
+              'five_year_history': data.get('history_days')==1825,
+              'symbols_match_scanner': data.get('symbols')==source['symbols'] and len(items)==10,
+              'selection_complete': data.get('selection_complete') is True,
+              'no_operational_failures': data.get('failed_symbols')==[],
+          }
+          failures += [f'structural:{name}' for name,passed in structural.items() if not passed]
+
+          rejection_rows=[]
+          for item in items:
+              if not isinstance(item,dict):
+                  failures.append('non-dict item')
+                  continue
+              symbol=item.get('symbol')
+              if item.get('status')=='failed':
+                  failures.append(f'{symbol}: remained operational failed')
+              stage=item.get('rejection_stage')
+              if stage:
+                  if item.get('status')!='no_eligible_strategy': failures.append(f'{symbol}: rejected item not no_eligible')
+                  if item.get('published') or item.get('promoted'): failures.append(f'{symbol}: rejected item published/promoted')
+                  evidence=item.get('rejection_evidence')
+                  if not isinstance(evidence,dict): failures.append(f'{symbol}: rejection evidence missing')
+                  holdout=item.get('sealed_holdout') or {}
+                  if stage in {'statistical_validation','robustness_validation'}:
+                      if holdout.get('status')!='sealed_not_opened': failures.append(f'{symbol}: pre-holdout rejection opened holdout')
+                  elif stage=='sealed_final_holdout':
+                      if holdout.get('status')!='opened_rejected': failures.append(f'{symbol}: holdout rejection status missing')
+                      if holdout.get('passed') is not False: failures.append(f'{symbol}: holdout rejection missing passed=false')
+                      gates=holdout.get('gates') or {}
+                      if not gates or all(gates.values()): failures.append(f'{symbol}: holdout rejection has no failed gate')
+                  else:
+                      failures.append(f'{symbol}: unexpected rejection stage {stage}')
+                  rejection_rows.append({'symbol':symbol,'stage':stage,'holdout_status':holdout.get('status'),'published':item.get('published'),'promoted':item.get('promoted')})
+
+          # This proof is specifically for the two real gate rejections observed on the
+          # same trading day before the semantic fix. If market-data revisions alter the
+          # strategy result, fail rather than silently claiming the semantic path was tested.
+          meta=by_symbol.get('META') or {}
+          nvda=by_symbol.get('NVDA') or {}
+          if meta.get('rejection_stage')!='statistical_validation': failures.append(f"META: expected statistical rejection, got {meta.get('rejection_stage')!r}")
+          if nvda.get('rejection_stage')!='sealed_final_holdout': failures.append(f"NVDA: expected holdout rejection, got {nvda.get('rejection_stage')!r}")
+
+          if data.get('published_count') != 0: failures.append(f"published_count={data.get('published_count')}")
+          if data.get('promoted_count') != 0: failures.append(f"promoted_count={data.get('promoted_count')}")
+          for item in items:
+              if isinstance(item,dict) and item.get('run_id'):
+                  failures.append(f"{item.get('symbol')}: unexpected run_id {item.get('run_id')}")
+
+          evidence={
+              'backtest_commit':source['backtest_commit'],
+              'scanner_commit':source['scanner_commit'],
+              'symbols':data.get('symbols'),
+              'validation_profile':data.get('validation_profile'),
+              'status':report.get('status'),
+              'selection_complete':data.get('selection_complete'),
+              'eligible_symbols':data.get('eligible_symbols') or [],
+              'ineligible_symbols':data.get('ineligible_symbols') or [],
+              'failed_symbols':data.get('failed_symbols') or [],
+              'published_count':data.get('published_count'),
+              'promoted_count':data.get('promoted_count'),
+              'rejections':rejection_rows,
+              'structural':structural,
+              'verification_failures':failures,
+          }
+          Path('reports/v4-safe-rejection-proof.json').write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          if failures:
+              raise SystemExit('Verification failed: ' + ' | '.join(failures))
+          PY
+
+      - name: Upload production proof evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: v4-safe-rejection-production-proof-${{ github.run_id }}
+          path: Backtest_Agent/reports/
+          if-no-files-found: error
+          retention-days: 30

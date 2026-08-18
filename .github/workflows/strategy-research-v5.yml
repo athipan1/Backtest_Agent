@@ -1,0 +1,220 @@
+name: Strategy Research v5
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'app/pre_holdout_research.py'
+      - 'app/research_candidate_profiles.py'
+      - 'scripts/run_research_candidate_profile.py'
+      - 'tests/test_research_candidate_profile_runner.py'
+      - 'tests/test_research_candidate_profiles.py'
+      - '.github/workflows/strategy-research-v5.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+  BACKTEST_RESEARCH_PROFILE: strategy_research_v5
+  BACKTEST_MAX_SYMBOLS: '10'
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_START: ''
+  BACKTEST_END: ''
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_NESTED_MINIMUM_BARS: '630'
+  BACKTEST_FINAL_HOLDOUT_ENABLED: 'true'
+  BACKTEST_FINAL_HOLDOUT_BARS: '252'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_FEE_BPS: '0'
+  BACKTEST_SLIPPAGE_BPS: '0'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '0.0'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  pre-holdout-research:
+    name: Scanner Top-10 sealed pre-holdout research
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: strategy-research-v5-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout Scanner_Agent universe
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Load current Scanner US 10-symbol universe
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          source = Path('Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          text = source.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
+          if not match:
+              raise SystemExit('Could not locate Scanner_Agent US market universe')
+          symbols = list(
+              dict.fromkeys(
+                  re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))
+              )
+          )
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
+          evidence = {
+              'scanner_commit': subprocess.check_output(
+                  ['git', '-C', 'Scanner_Agent', 'rev-parse', 'HEAD'], text=True
+              ).strip(),
+              'symbols': symbols,
+              'source': str(source),
+          }
+          Path('reports/strategy-research-v5-scanner.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as handle:
+              handle.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Run sealed Strategy Research v5
+        run: python scripts/run_research_candidate_profile.py
+
+      - name: Verify holdout stayed sealed and no downstream write path exists
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          scanner = json.loads(
+              Path('reports/strategy-research-v5-scanner.json').read_text(encoding='utf-8')
+          )
+          report_path = Path('reports/research-candidate-profile-result.json')
+          if not report_path.exists():
+              raise SystemExit('Strategy Research v5 report is missing')
+          report = json.loads(report_path.read_text(encoding='utf-8'))
+          data = report.get('data') or {}
+          items = data.get('items') or []
+          failures = []
+
+          structural = {
+              'run_success': report.get('status') == 'success',
+              'research_only': data.get('research_only') is True,
+              'validation_profile_v4': data.get('validation_profile') == 'nested_walk_forward_v4',
+              'profile_v5': (data.get('research_profile') or {}).get('profile_id') == 'strategy_research_v5',
+              'candidate_count_8': (data.get('research_profile') or {}).get('candidate_count') == 8,
+              'scanner_symbols_exact': data.get('symbols') == scanner.get('symbols') and len(items) == 10,
+              'holdout_reserved': data.get('holdout_reserved') is True,
+              'holdout_never_opened': data.get('holdout_opened_count') == 0,
+              'database_disabled': data.get('database_publish_allowed') is False,
+              'promotion_disabled': data.get('promotion_allowed') is False,
+              'execution_disabled': data.get('execution_allowed') is False,
+              'no_operational_failures': data.get('failed_symbols') == [],
+          }
+          failures.extend(name for name, passed in structural.items() if not passed)
+
+          rows = []
+          forbidden_holdout_keys = {
+              'passed',
+              'return_pct',
+              'sharpe_ratio',
+              'profit_factor',
+              'max_drawdown',
+              'gates',
+              'dataset_fingerprint',
+              'strategy_id',
+          }
+          for item in items:
+              symbol = item.get('symbol')
+              status = item.get('status')
+              if status not in {'pre_holdout_candidate', 'no_eligible_strategy'}:
+                  failures.append(f'{symbol}: unexpected research status {status!r}')
+              if item.get('published') or item.get('promoted'):
+                  failures.append(f'{symbol}: research item reached downstream state')
+              holdout = item.get('sealed_holdout') or {}
+              if holdout.get('status') != 'sealed_not_opened':
+                  failures.append(f'{symbol}: sealed holdout status changed')
+              if holdout.get('evaluation_allowed') is not False:
+                  failures.append(f'{symbol}: holdout evaluation was not explicitly forbidden')
+              leaked = sorted(forbidden_holdout_keys.intersection(holdout))
+              if leaked:
+                  failures.append(f'{symbol}: holdout evidence leaked keys {leaked}')
+              rows.append(
+                  {
+                      'symbol': symbol,
+                      'status': status,
+                      'selected_strategy_id': item.get('selected_strategy_id'),
+                      'pre_holdout_passed': item.get('pre_holdout_passed'),
+                      'rejection_stage': item.get('rejection_stage'),
+                  }
+              )
+
+          evidence = {
+              'scanner_commit': scanner.get('scanner_commit'),
+              'symbols': data.get('symbols'),
+              'validation_profile': data.get('validation_profile'),
+              'research_profile': data.get('research_profile'),
+              'pre_holdout_candidate_symbols': data.get('pre_holdout_candidate_symbols') or [],
+              'ineligible_symbols': data.get('ineligible_symbols') or [],
+              'failed_symbols': data.get('failed_symbols') or [],
+              'holdout_opened_count': data.get('holdout_opened_count'),
+              'rows': rows,
+              'verification_failures': failures,
+          }
+          Path('reports/strategy-research-v5-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          if failures:
+              raise SystemExit('Strategy Research v5 verification failed: ' + ' | '.join(failures))
+          PY
+
+      - name: Upload Strategy Research v5 evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: strategy-research-v5-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 30

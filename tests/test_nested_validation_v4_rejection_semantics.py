@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from types import SimpleNamespace
 
 from app import nested_validation_v4 as v4
 
@@ -38,6 +40,14 @@ def _failed(symbol: str, error: str, *, published: bool = False):
         "selection": None,
         "error": error,
     }
+
+
+class Dumpable:
+    def __init__(self, value):
+        self.value = value
+
+    def model_dump(self, mode="json"):
+        return self.value
 
 
 def test_expected_statistical_rejection_becomes_safe_no_trade():
@@ -155,3 +165,83 @@ def test_never_reclassifies_an_item_that_claims_publication():
 
     assert changed is False
     assert output["data"]["items"][0]["status"] == "failed"
+
+
+def test_runtime_adapter_captures_holdout_evidence_and_rewrites_reports(tmp_path):
+    result = SimpleNamespace(symbols=["NVDA"])
+    request = SimpleNamespace(symbols=["NVDA"])
+    statistical = Dumpable(
+        {"status": "completed", "passed": True, "gates": {"all": True}}
+    )
+    robustness = Dumpable(
+        {"status": "completed", "passed": True, "gates": {"all": True}}
+    )
+    holdout = Dumpable(
+        {
+            "enabled": True,
+            "passed": False,
+            "strategy_id": "sma-crossover-balanced-v1",
+            "gates": {
+                "minimum_return": False,
+                "minimum_sharpe": True,
+            },
+        }
+    )
+    runner = None
+
+    def original_statistical(value, *args, **kwargs):
+        assert value is result
+        return statistical
+
+    def original_robustness(value, *args, **kwargs):
+        assert value is request
+        return robustness
+
+    def original_holdout(*args, **kwargs):
+        assert kwargs["result"] is result
+        return holdout
+
+    def original_hourly(report_path):
+        runner.run_statistical_validation(result)
+        runner.run_promotion_robustness(request)
+        runner.evaluate_sealed_final_holdout(result=result)
+        return _output(
+            _failed(
+                "NVDA",
+                "sealed final holdout blocked promotion: "
+                "sealed_final_holdout_all_gates, sealed_final_holdout_passed",
+            )
+        )
+
+    runner = SimpleNamespace(
+        VALIDATION_PROFILE="nested_walk_forward_v3",
+        run_walk_forward_multi_strategy_backtest=object(),
+        run_statistical_validation=original_statistical,
+        run_promotion_robustness=original_robustness,
+        evaluate_sealed_final_holdout=original_holdout,
+        run_nested_hourly_backtest=original_hourly,
+    )
+    evidence = v4.apply_nested_validation_v4(runner)
+    report_path = tmp_path / "reports" / "hourly-backtest-result.json"
+
+    output = runner.run_nested_hourly_backtest(report_path)
+
+    assert evidence["expected_gate_rejections_are_operational_failures"] is False
+    assert output["status"] == "success"
+    assert output["data"]["failed_symbols"] == []
+    assert output["data"]["ineligible_symbols"] == ["NVDA"]
+    item = output["data"]["items"][0]
+    assert item["rejection_stage"] == "sealed_final_holdout"
+    assert item["rejection_evidence"] == holdout.value
+    assert item["sealed_holdout"]["status"] == "opened_rejected"
+    assert item["sealed_holdout"]["passed"] is False
+    assert report_path.exists()
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert persisted["status"] == "success"
+    item_path = report_path.parent / "hourly-backtest-nvda.json"
+    assert item_path.exists()
+    persisted_item = json.loads(item_path.read_text(encoding="utf-8"))
+    assert persisted_item["rejection_stage"] == "sealed_final_holdout"
+
+    second = v4.apply_nested_validation_v4(runner)
+    assert second["validation_profile"] == "nested_walk_forward_v4"

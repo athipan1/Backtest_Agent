@@ -215,9 +215,26 @@ def test_v4_safe_candidate_reaches_outer_oos_even_when_train_promotion_stats_fai
 
 def test_adapter_versions_profile_without_changing_downstream_authority():
     sentinel = object()
+
+    def statistical(result, *args, **kwargs):
+        return SimpleNamespace(model_dump=lambda mode="json": {})
+
+    def robustness(request, *args, **kwargs):
+        return SimpleNamespace(model_dump=lambda mode="json": {})
+
+    def holdout(*args, **kwargs):
+        return SimpleNamespace(model_dump=lambda mode="json": {})
+
+    def hourly(report_path):
+        return {"status": "success", "data": {"items": []}}
+
     runner = SimpleNamespace(
         VALIDATION_PROFILE="nested_walk_forward_v3",
         run_walk_forward_multi_strategy_backtest=sentinel,
+        run_statistical_validation=statistical,
+        run_promotion_robustness=robustness,
+        evaluate_sealed_final_holdout=holdout,
+        run_nested_hourly_backtest=hourly,
     )
 
     evidence = v4.apply_nested_validation_v4(runner)
@@ -225,7 +242,9 @@ def test_adapter_versions_profile_without_changing_downstream_authority():
     assert runner.VALIDATION_PROFILE == "nested_walk_forward_v4"
     assert runner.run_walk_forward_multi_strategy_backtest is v4.run_walk_forward_multi_strategy_backtest_v4
     assert runner.INNER_SELECTION_POLICY == "safety_data_sufficiency_ranked_v1"
+    assert runner._V4_REJECTION_CLASSIFIER_INSTALLED is True
     assert evidence["outer_oos_gates_changed"] is False
     assert evidence["full_statistical_authority_changed"] is False
     assert evidence["robustness_authority_changed"] is False
     assert evidence["sealed_holdout_authority_changed"] is False
+    assert evidence["expected_gate_rejections_are_operational_failures"] is False

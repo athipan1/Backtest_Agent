@@ -1,0 +1,307 @@
+name: Production Scanner Top-10 Backtest Verification
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_MODE: nested_promotion
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
+  BACKTEST_MAX_SYMBOLS: '10'
+  BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
+  BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
+  BACKTEST_TIMEFRAME: ${{ vars.BACKTEST_TIMEFRAME || '1d' }}
+  BACKTEST_START: ''
+  BACKTEST_END: ''
+  BACKTEST_MINIMUM_BARS: ${{ vars.BACKTEST_MINIMUM_BARS || '252' }}
+  BACKTEST_BAR_LIMIT: ${{ vars.BACKTEST_BAR_LIMIT || '10000' }}
+  BACKTEST_INITIAL_EQUITY: ${{ vars.BACKTEST_INITIAL_EQUITY || '100000' }}
+  BACKTEST_STRATEGY: ${{ vars.BACKTEST_STRATEGY || 'sma_crossover' }}
+  BACKTEST_FAST_WINDOW: ${{ vars.BACKTEST_FAST_WINDOW || '2' }}
+  BACKTEST_SLOW_WINDOW: ${{ vars.BACKTEST_SLOW_WINDOW || '3' }}
+  BACKTEST_FEE_BPS: ${{ vars.BACKTEST_FEE_BPS || '0' }}
+  BACKTEST_SLIPPAGE_BPS: ${{ vars.BACKTEST_SLIPPAGE_BPS || '0' }}
+  BACKTEST_RISK_PER_TRADE: ${{ vars.BACKTEST_RISK_PER_TRADE || '0.01' }}
+  BACKTEST_MAX_POSITION_PCT: ${{ vars.BACKTEST_MAX_POSITION_PCT || '0.10' }}
+  BACKTEST_STOP_LOSS_PCT: ${{ vars.BACKTEST_STOP_LOSS_PCT || '0.03' }}
+  BACKTEST_REWARD_RISK_RATIO: ${{ vars.BACKTEST_REWARD_RISK_RATIO || '2.0' }}
+  BACKTEST_USE_RISK_AGENT: ${{ vars.BACKTEST_USE_RISK_AGENT || 'true' }}
+  BACKTEST_MAX_TRADES_PER_DAY: ${{ vars.BACKTEST_MAX_TRADES_PER_DAY || '5' }}
+  BACKTEST_EMERGENCY_HALT: ${{ vars.BACKTEST_EMERGENCY_HALT || 'false' }}
+  BACKTEST_FORCE_CLOSE_AT_END: ${{ vars.BACKTEST_FORCE_CLOSE_AT_END || 'false' }}
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: ${{ vars.BACKTEST_MAX_TOTAL_EXPOSURE_PCT || '1.0' }}
+  BACKTEST_MAX_OPEN_POSITIONS: ${{ vars.BACKTEST_MAX_OPEN_POSITIONS || '25' }}
+  BACKTEST_CASH_RESERVE_PCT: ${{ vars.BACKTEST_CASH_RESERVE_PCT || '0.0' }}
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: ${{ vars.BACKTEST_MAX_NEW_POSITIONS_PER_BAR || '25' }}
+  BACKTEST_PERIODS_PER_YEAR: ${{ vars.BACKTEST_PERIODS_PER_YEAR || '252' }}
+  BACKTEST_ANNUAL_RISK_FREE_RATE: ${{ vars.BACKTEST_ANNUAL_RISK_FREE_RATE || '0.0' }}
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: ${{ vars.BACKTEST_MAX_VOLUME_PARTICIPATION_PCT || '1.0' }}
+  BACKTEST_MARKET_IMPACT_BPS: ${{ vars.BACKTEST_MARKET_IMPACT_BPS || '0.0' }}
+  PUBLISH_TO_DATABASE: 'true'
+  DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
+  DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  production-scanner-top10-backtest:
+    name: Scanner US Top-10 production nested Backtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: production-scanner-top10-backtest-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout Scanner_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install Backtest dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run Backtest tests first
+        env:
+          BACKTEST_ENV: test
+          PUBLISH_TO_DATABASE: 'false'
+          DATABASE_AGENT_URL: ''
+          DATABASE_AGENT_API_KEY: ''
+        run: PYTHONPATH=. python -m pytest -q
+
+      - name: Load current Scanner US 10-symbol market universe
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          source = Path('Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          text = source.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
+          if not match:
+              raise SystemExit('Could not locate Scanner_Agent US market smoke universe')
+          symbols = re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))
+          symbols = list(dict.fromkeys(symbols))
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {len(symbols)}: {symbols}')
+
+          scanner_sha = subprocess.check_output(
+              ['git', '-C', 'Scanner_Agent', 'rev-parse', 'HEAD'], text=True
+          ).strip()
+          evidence = {
+              'source': 'Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml',
+              'source_semantics': 'scanner_us_market_smoke_universe',
+              'scanner_commit': scanner_sha,
+              'symbols': symbols,
+              'symbol_count': len(symbols),
+              'note': 'This is the current Scanner_Agent US smoke-test universe, not a claim that these are the market-wide top 10 ranked stocks.',
+          }
+          Path('reports/scanner-top10-source.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as env_file:
+              env_file.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Verify Database_Agent connectivity
+        run: |
+          python - <<'PY'
+          import os
+          import httpx
+          from app.database_client import DatabaseAgentClient
+
+          client = DatabaseAgentClient()
+          if not client.base_url:
+              raise SystemExit('DATABASE_AGENT_URL is not configured')
+          if not client.api_key.strip():
+              raise SystemExit('DATABASE_AGENT_API_KEY is not configured')
+          headers = {
+              'X-API-KEY': client.api_key.strip(),
+              'X-Correlation-ID': f"top10-db-preflight-{os.getenv('GITHUB_RUN_ID', 'local')}",
+          }
+          ready = httpx.get(f'{client.base_url}/ready', timeout=20.0)
+          if ready.status_code != 200:
+              raise SystemExit(f'Database_Agent /ready failed: HTTP {ready.status_code}')
+          probe_id = f"top10-probe-{os.getenv('GITHUB_RUN_ID', 'local')}"
+          probe = httpx.get(
+              f'{client.base_url}/backtests/runs/{probe_id}', headers=headers, timeout=20.0
+          )
+          if probe.status_code != 404:
+              raise SystemExit(f'Database_Agent authenticated exact-route probe failed: HTTP {probe.status_code}')
+          print('Database_Agent readiness and authenticated exact-route probe passed')
+          PY
+
+      - name: Run production nested Backtest for Scanner US 10-symbol universe
+        env:
+          BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS: ${{ vars.BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS || '2.0' }}
+          BACKTEST_DEFAULT_QUANTITY_INCREMENT: ${{ vars.BACKTEST_DEFAULT_QUANTITY_INCREMENT || '1' }}
+        run: python scripts/run_hourly_backtest.py
+
+      - name: Verify all 10 decisions and exact Database persistence for eligible strategies
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+          from app.database_client import DatabaseAgentClient
+
+          source_path = Path('reports/scanner-top10-source.json')
+          report_path = Path('reports/hourly-backtest-result.json')
+          if not source_path.exists():
+              raise SystemExit('Scanner source evidence is missing')
+          if not report_path.exists():
+              raise SystemExit('Hourly Backtest report is missing')
+
+          source = json.loads(source_path.read_text(encoding='utf-8'))
+          report = json.loads(report_path.read_text(encoding='utf-8'))
+          data = report.get('data') or {}
+          items = data.get('items') or []
+          expected_symbols = source['symbols']
+
+          required = {
+              'status_success': report.get('status') == 'success',
+              'ten_symbols': len(expected_symbols) == 10 and data.get('symbols') == expected_symbols,
+              'ten_items': len(items) == 10,
+              'five_year_history': data.get('history_days') == 1825,
+              'nested_mode': data.get('mode') == 'nested_walk_forward_multi_strategy_selection',
+              'nested_profile_v3': data.get('validation_profile') == 'nested_walk_forward_v3',
+              'nested_selection_method': data.get('selection_method') == 'nested_train_select_test_evaluate',
+              'selection_complete': data.get('selection_complete') is True,
+              'no_failed_symbols': data.get('failed_symbols') == [],
+              'walk_forward_required': data.get('walk_forward_required') is True,
+              'sealed_holdout_required': data.get('sealed_final_holdout_required') is True,
+              'promotion_lifecycle_required': data.get('promotion_lifecycle_required') is True,
+          }
+          failed_assertions = [name for name, passed in required.items() if not passed]
+          if failed_assertions:
+              raise SystemExit('Top-10 production evidence assertions failed: ' + ', '.join(failed_assertions))
+
+          client = DatabaseAgentClient()
+          headers = {
+              'X-API-KEY': client.api_key.strip(),
+              'X-Correlation-ID': f"top10-exact-{os.getenv('GITHUB_RUN_ID', 'local')}",
+          }
+          item_evidence = []
+          exact_matches = 0
+
+          for item in items:
+              symbol = item.get('symbol')
+              status = item.get('status')
+              row = {
+                  'symbol': symbol,
+                  'status': status,
+                  'selected_strategy_id': item.get('selected_strategy_id'),
+                  'run_id': item.get('run_id'),
+                  'published': bool(item.get('published')),
+                  'promoted': bool(item.get('promoted')),
+                  'promotion_state': item.get('promotion_state'),
+                  'database_exact_get_proven': False,
+              }
+
+              if status == 'eligible_strategy_found':
+                  if not item.get('published') or not item.get('promoted') or not item.get('run_id'):
+                      raise SystemExit(f'{symbol}: eligible strategy was not safely published/promoted')
+                  response = httpx.get(
+                      f"{client.base_url}/backtests/runs/{item['run_id']}",
+                      headers=headers,
+                      timeout=30.0,
+                  )
+                  if response.status_code != 200:
+                      raise SystemExit(f'{symbol}: Database exact GET failed with HTTP {response.status_code}')
+                  body = response.json()
+                  stored = ((body.get('data') or {}).get('run') or {})
+                  expected = {
+                      'run_id': item.get('run_id'),
+                      'symbol': symbol,
+                      'strategy_id': item.get('selected_strategy_id'),
+                      'timeframe': os.getenv('BACKTEST_TIMEFRAME', '1d'),
+                  }
+                  actual = {key: stored.get(key) for key in expected}
+                  if actual != expected:
+                      raise SystemExit(f'{symbol}: Database exact identity mismatch: expected={expected} actual={actual}')
+                  row['database_exact_get_proven'] = True
+                  exact_matches += 1
+              elif status == 'no_eligible_strategy':
+                  if item.get('published') or item.get('promoted'):
+                      raise SystemExit(f'{symbol}: ineligible strategy was unexpectedly published/promoted')
+                  sealed = item.get('sealed_holdout') or {}
+                  if sealed.get('status') != 'sealed_not_opened':
+                      raise SystemExit(f'{symbol}: no-eligible path opened the sealed final holdout')
+              else:
+                  raise SystemExit(f'{symbol}: unexpected item status {status!r}')
+
+              selection = item.get('selection') or {}
+              nested = selection.get('nested_walk_forward') or {}
+              row['profitable_window_rate'] = nested.get('profitable_window_rate')
+              row['median_sharpe_ratio'] = nested.get('median_sharpe_ratio')
+              row['stability_score'] = nested.get('stability_score')
+              row['failure_reasons'] = selection.get('failure_reasons')
+              item_evidence.append(row)
+
+          eligible = data.get('eligible_symbols') or []
+          ineligible = data.get('ineligible_symbols') or []
+          if exact_matches != len(eligible):
+              raise SystemExit(
+                  f'Exact Database verification count mismatch: eligible={len(eligible)} exact={exact_matches}'
+              )
+
+          evidence = {
+              'status': 'success',
+              'github_run_id': os.getenv('GITHUB_RUN_ID'),
+              'scanner_source': source,
+              'history_days': data.get('history_days'),
+              'minimum_research_bars': data.get('minimum_research_bars'),
+              'final_holdout_bars': data.get('final_holdout_bars'),
+              'minimum_bars': data.get('minimum_bars'),
+              'eligible_symbols': eligible,
+              'ineligible_symbols': ineligible,
+              'failed_symbols': data.get('failed_symbols') or [],
+              'eligible_count': data.get('eligible_count'),
+              'ineligible_count': data.get('ineligible_count'),
+              'published_count': data.get('published_count'),
+              'promoted_count': data.get('promoted_count'),
+              'database_exact_match_count': exact_matches,
+              'items': item_evidence,
+          }
+          Path('reports/production-scanner-top10-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload production Top-10 verification evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: production-scanner-top10-backtest-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,192 @@
+name: NVDA Pre-Holdout Robustness Verification
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_FEE_BPS: '0'
+  BACKTEST_SLIPPAGE_BPS: '0'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '0.0'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  verify:
+    name: NVDA strict statistical + robustness before sealed holdout
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify NVDA pre-holdout authority
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          from app.data_provider import AlpacaMarketDataProvider
+          from app.final_holdout import split_sealed_final_holdout
+          from app.hourly_promotion_runner import (
+              DEFAULT_MINIMUM_BARS,
+              _default_date_range,
+              _final_holdout_criteria,
+              _request_kwargs,
+          )
+          from app.multi_strategy import build_run_request, resolve_strategy_id
+          from app.multi_strategy_walk_forward import WalkForwardMultiStrategyRequest
+          from app.promotion_robustness import run_promotion_robustness
+          from app.risk_engine import run_backtest_with_risk
+          from app.statistical_validation import run_statistical_validation
+
+          symbol = 'NVDA'
+          expected_strategy_id = 'sma-crossover-balanced-v1'
+          timeframe = os.getenv('BACKTEST_TIMEFRAME', '1d')
+          start, end = _default_date_range()
+          holdout_criteria = _final_holdout_criteria()
+          minimum_bars = DEFAULT_MINIMUM_BARS + holdout_criteria.bars
+          provider = AlpacaMarketDataProvider(
+              api_key=os.environ['ALPACA_API_KEY_ID'],
+              secret_key=os.environ['ALPACA_SECRET_KEY'],
+              base_url=os.getenv('ALPACA_DATA_API_URL', 'https://data.alpaca.markets'),
+              feed=os.getenv('ALPACA_DATA_FEED', 'iex'),
+          )
+          bars = provider.fetch_bars(
+              symbol=symbol,
+              timeframe=timeframe,
+              start=start,
+              end=end,
+              minimum_bars=minimum_bars,
+              limit=int(os.getenv('BACKTEST_BAR_LIMIT', '10000')),
+          )
+          research_bars, sealed_holdout_bars = split_sealed_final_holdout(
+              bars,
+              criteria=holdout_criteria,
+              minimum_research_bars=DEFAULT_MINIMUM_BARS,
+          )
+          request = WalkForwardMultiStrategyRequest(
+              **_request_kwargs(symbol=symbol, bars=research_bars)
+          )
+          candidates = {
+              resolve_strategy_id(candidate, request): candidate
+              for candidate in request.candidates
+          }
+          candidate = candidates.get(expected_strategy_id)
+          if candidate is None:
+              raise SystemExit(f'Expected candidate missing: {expected_strategy_id}')
+
+          run_request = build_run_request(candidate, request).model_copy(
+              deep=True,
+              update={'force_close_at_end': True},
+          )
+          result = run_backtest_with_risk(run_request)
+          statistical = run_statistical_validation(
+              result,
+              candidate_count=len(request.candidates),
+              periods_per_year=request.periods_per_year,
+              criteria=request.statistical_criteria,
+          )
+          robustness = run_promotion_robustness(run_request)
+
+          # The sealed final holdout is intentionally never passed to the strategy
+          # simulator in this verification. Only its size is recorded.
+          evidence = {
+              'status': 'success',
+              'github_run_id': os.getenv('GITHUB_RUN_ID'),
+              'symbol': symbol,
+              'strategy_id': expected_strategy_id,
+              'research_bar_count': len(research_bars),
+              'sealed_holdout_bar_count': len(sealed_holdout_bars),
+              'sealed_holdout_status': 'sealed_not_opened',
+              'database_publish_attempted': False,
+              'research_metrics': {
+                  'trade_count': result.metrics.trade_count,
+                  'return_pct': result.metrics.return_pct,
+                  'annualized_return': result.metrics.annualized_return,
+                  'sharpe_ratio': result.metrics.sharpe_ratio,
+                  'profit_factor': result.metrics.profit_factor,
+                  'max_drawdown': result.metrics.max_drawdown,
+                  'benchmark_return_pct': result.metrics.benchmark_return_pct,
+                  'excess_return_pct': result.metrics.excess_return_pct,
+              },
+              'strict_statistical_validation': statistical.model_dump(mode='json'),
+              'promotion_robustness': robustness.model_dump(mode='json'),
+              'pre_holdout_ready': (
+                  statistical.status == 'completed'
+                  and statistical.passed is True
+                  and bool(statistical.gates)
+                  and all(statistical.gates.values())
+                  and robustness.status == 'completed'
+                  and robustness.passed is True
+                  and bool(robustness.gates)
+                  and all(robustness.gates.values())
+              ),
+          }
+          Path('reports/nvda-pre-holdout-robustness.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps({
+              'symbol': symbol,
+              'strategy_id': expected_strategy_id,
+              'sealed_holdout_status': evidence['sealed_holdout_status'],
+              'statistical_passed': statistical.passed,
+              'statistical_failed_gates': [k for k,v in statistical.gates.items() if not v],
+              'robustness_passed': robustness.passed,
+              'robustness_failed_gates': [k for k,v in robustness.gates.items() if not v],
+              'scenario_pass_rate': robustness.scenario_pass_rate,
+              'pre_holdout_ready': evidence['pre_holdout_ready'],
+          }, indent=2))
+          if not evidence['pre_holdout_ready']:
+              raise SystemExit('NVDA did not pass strict pre-holdout statistical + robustness authority')
+          PY
+
+      - name: Upload pre-holdout evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: nvda-pre-holdout-robustness-${{ github.run_id }}
+          path: reports/nvda-pre-holdout-robustness.json
+          if-no-files-found: error
+          retention-days: 30

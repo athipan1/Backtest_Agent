@@ -1,0 +1,232 @@
+name: Production Hourly Backtest E2E Verification
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_MODE: nested_promotion
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_ACCOUNT_ID: ${{ vars.BACKTEST_ACCOUNT_ID || '1' }}
+  BACKTEST_SYMBOL: AAPL
+  BACKTEST_SYMBOLS: AAPL
+  BACKTEST_MAX_SYMBOLS: ${{ vars.BACKTEST_MAX_SYMBOLS || '10' }}
+  BACKTEST_SKILL_ID: ${{ vars.BACKTEST_SKILL_ID || 'hourly-sma-crossover' }}
+  BACKTEST_STRATEGY_ID: ${{ vars.BACKTEST_STRATEGY_ID || 'hourly-sma-crossover' }}
+  BACKTEST_TIMEFRAME: ${{ vars.BACKTEST_TIMEFRAME || '1d' }}
+  BACKTEST_START: ''
+  BACKTEST_END: ''
+  BACKTEST_MINIMUM_BARS: ${{ vars.BACKTEST_MINIMUM_BARS || '252' }}
+  BACKTEST_BAR_LIMIT: ${{ vars.BACKTEST_BAR_LIMIT || '10000' }}
+  BACKTEST_INITIAL_EQUITY: ${{ vars.BACKTEST_INITIAL_EQUITY || '100000' }}
+  BACKTEST_STRATEGY: ${{ vars.BACKTEST_STRATEGY || 'sma_crossover' }}
+  BACKTEST_FAST_WINDOW: ${{ vars.BACKTEST_FAST_WINDOW || '2' }}
+  BACKTEST_SLOW_WINDOW: ${{ vars.BACKTEST_SLOW_WINDOW || '3' }}
+  BACKTEST_FEE_BPS: ${{ vars.BACKTEST_FEE_BPS || '0' }}
+  BACKTEST_SLIPPAGE_BPS: ${{ vars.BACKTEST_SLIPPAGE_BPS || '0' }}
+  BACKTEST_RISK_PER_TRADE: ${{ vars.BACKTEST_RISK_PER_TRADE || '0.01' }}
+  BACKTEST_MAX_POSITION_PCT: ${{ vars.BACKTEST_MAX_POSITION_PCT || '0.10' }}
+  BACKTEST_STOP_LOSS_PCT: ${{ vars.BACKTEST_STOP_LOSS_PCT || '0.03' }}
+  BACKTEST_REWARD_RISK_RATIO: ${{ vars.BACKTEST_REWARD_RISK_RATIO || '2.0' }}
+  BACKTEST_USE_RISK_AGENT: ${{ vars.BACKTEST_USE_RISK_AGENT || 'true' }}
+  BACKTEST_MAX_TRADES_PER_DAY: ${{ vars.BACKTEST_MAX_TRADES_PER_DAY || '5' }}
+  BACKTEST_EMERGENCY_HALT: ${{ vars.BACKTEST_EMERGENCY_HALT || 'false' }}
+  BACKTEST_FORCE_CLOSE_AT_END: ${{ vars.BACKTEST_FORCE_CLOSE_AT_END || 'false' }}
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: ${{ vars.BACKTEST_MAX_TOTAL_EXPOSURE_PCT || '1.0' }}
+  BACKTEST_MAX_OPEN_POSITIONS: ${{ vars.BACKTEST_MAX_OPEN_POSITIONS || '25' }}
+  BACKTEST_CASH_RESERVE_PCT: ${{ vars.BACKTEST_CASH_RESERVE_PCT || '0.0' }}
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: ${{ vars.BACKTEST_MAX_NEW_POSITIONS_PER_BAR || '25' }}
+  BACKTEST_PERIODS_PER_YEAR: ${{ vars.BACKTEST_PERIODS_PER_YEAR || '252' }}
+  BACKTEST_ANNUAL_RISK_FREE_RATE: ${{ vars.BACKTEST_ANNUAL_RISK_FREE_RATE || '0.0' }}
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: ${{ vars.BACKTEST_MAX_VOLUME_PARTICIPATION_PCT || '1.0' }}
+  BACKTEST_MARKET_IMPACT_BPS: ${{ vars.BACKTEST_MARKET_IMPACT_BPS || '0.0' }}
+  PUBLISH_TO_DATABASE: 'true'
+  DATABASE_AGENT_URL: ${{ secrets.DATABASE_AGENT_URL }}
+  DATABASE_AGENT_API_KEY: ${{ secrets.DATABASE_AGENT_API_KEY }}
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  production-hourly-e2e:
+    name: Production AAPL nested Backtest E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: production-hourly-backtest-e2e-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install test and runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run tests first
+        env:
+          BACKTEST_ENV: test
+          PUBLISH_TO_DATABASE: 'false'
+          DATABASE_AGENT_URL: ''
+          DATABASE_AGENT_API_KEY: ''
+        run: PYTHONPATH=. python -m pytest -q
+
+      - name: Verify Database_Agent connectivity
+        run: |
+          python - <<'PY'
+          import os
+          import httpx
+          from app.database_client import DatabaseAgentClient
+
+          client = DatabaseAgentClient()
+          base_url = client.base_url
+          api_key = client.api_key.strip()
+          if not base_url:
+              raise SystemExit('DATABASE_AGENT_URL is not configured')
+          if not api_key:
+              raise SystemExit('DATABASE_AGENT_API_KEY is not configured')
+
+          headers = {
+              'X-API-KEY': api_key,
+              'X-Correlation-ID': f"production-hourly-e2e-preflight-{os.getenv('GITHUB_RUN_ID', 'local')}",
+          }
+          ready = httpx.get(f'{base_url}/ready', timeout=20.0)
+          if ready.status_code != 200:
+              raise SystemExit(f'Database_Agent /ready failed: HTTP {ready.status_code}')
+          probe_id = f"production-hourly-e2e-probe-{os.getenv('GITHUB_RUN_ID', 'local')}"
+          probe = httpx.get(f'{base_url}/backtests/runs/{probe_id}', headers=headers, timeout=20.0)
+          if probe.status_code != 404:
+              raise SystemExit(f'Database_Agent authenticated exact-route probe failed: HTTP {probe.status_code}')
+          print('Database_Agent readiness and authenticated exact-route probe passed')
+          PY
+
+      - name: Run production hourly Backtest
+        env:
+          BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS: ${{ vars.BACKTEST_DEFAULT_BID_ASK_SPREAD_BPS || '2.0' }}
+          BACKTEST_DEFAULT_QUANTITY_INCREMENT: ${{ vars.BACKTEST_DEFAULT_QUANTITY_INCREMENT || '1' }}
+        run: python scripts/run_hourly_backtest.py
+
+      - name: Verify five-year nested selection and Database persistence
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import httpx
+          from app.database_client import DatabaseAgentClient
+
+          report_path = Path('reports/hourly-backtest-result.json')
+          if not report_path.exists():
+              raise SystemExit('Hourly Backtest report is missing')
+          report = json.loads(report_path.read_text(encoding='utf-8'))
+          data = report.get('data') or {}
+          items = data.get('items') or []
+
+          required = {
+              'status_success': report.get('status') == 'success',
+              'aapl_only': data.get('symbols') == ['AAPL'],
+              'five_year_history': data.get('history_days') == 1825,
+              'nested_mode': data.get('mode') == 'nested_walk_forward_multi_strategy_selection',
+              'nested_profile_v3': data.get('validation_profile') == 'nested_walk_forward_v3',
+              'nested_selection_method': data.get('selection_method') == 'nested_train_select_test_evaluate',
+              'walk_forward_required': data.get('walk_forward_required') is True,
+              'sealed_holdout_required': data.get('sealed_final_holdout_required') is True,
+              'promotion_lifecycle_required': data.get('promotion_lifecycle_required') is True,
+              'selection_complete': data.get('selection_complete') is True,
+              'no_failed_symbols': data.get('failed_symbols') == [],
+              'one_aapl_item': len(items) == 1 and items[0].get('symbol') == 'AAPL',
+          }
+          failed_assertions = [name for name, passed in required.items() if not passed]
+          if failed_assertions:
+              raise SystemExit('Production Backtest evidence assertions failed: ' + ', '.join(failed_assertions))
+
+          item = items[0]
+          item_status = item.get('status')
+          evidence = {
+              'status': 'success',
+              'github_run_id': os.getenv('GITHUB_RUN_ID'),
+              'symbol': 'AAPL',
+              'history_days': data.get('history_days'),
+              'minimum_research_bars': data.get('minimum_research_bars'),
+              'final_holdout_bars': data.get('final_holdout_bars'),
+              'minimum_bars': data.get('minimum_bars'),
+              'mode': data.get('mode'),
+              'validation_profile': data.get('validation_profile'),
+              'selection_method': data.get('selection_method'),
+              'selection_complete': data.get('selection_complete'),
+              'item_status': item_status,
+              'selected_strategy_id': item.get('selected_strategy_id'),
+              'published': item.get('published'),
+              'promoted': item.get('promoted'),
+              'promotion_state': item.get('promotion_state'),
+              'run_id': item.get('run_id'),
+              'database_exact_get_proven': False,
+              'database_identity_match': False,
+          }
+
+          if item_status == 'eligible_strategy_found':
+              if not item.get('published') or not item.get('promoted') or not item.get('run_id'):
+                  raise SystemExit('Eligible strategy did not publish/promote safely')
+              client = DatabaseAgentClient()
+              headers = {
+                  'X-API-KEY': client.api_key.strip(),
+                  'X-Correlation-ID': f"production-hourly-e2e-exact-{os.getenv('GITHUB_RUN_ID', 'local')}",
+              }
+              response = httpx.get(
+                  f"{client.base_url}/backtests/runs/{item['run_id']}",
+                  headers=headers,
+                  timeout=30.0,
+              )
+              if response.status_code != 200:
+                  raise SystemExit(f"Database exact GET failed: HTTP {response.status_code}")
+              body = response.json()
+              stored = ((body.get('data') or {}).get('run') or {})
+              expected = {
+                  'run_id': item.get('run_id'),
+                  'symbol': 'AAPL',
+                  'strategy_id': item.get('selected_strategy_id'),
+                  'timeframe': os.getenv('BACKTEST_TIMEFRAME', '1d'),
+              }
+              actual = {key: stored.get(key) for key in expected}
+              if actual != expected:
+                  raise SystemExit(f'Database exact identity mismatch: expected={expected} actual={actual}')
+              evidence['database_exact_get_proven'] = True
+              evidence['database_identity_match'] = True
+          elif item_status == 'no_eligible_strategy':
+              if item.get('published') or item.get('promoted'):
+                  raise SystemExit('No-eligible strategy was unexpectedly published/promoted')
+              sealed = item.get('sealed_holdout') or {}
+              if sealed.get('status') != 'sealed_not_opened':
+                  raise SystemExit('No-eligible path did not preserve sealed final holdout')
+              evidence['database_publish_not_applicable_reason'] = 'no_eligible_strategy_by_production_policy'
+          else:
+              raise SystemExit(f'Unexpected AAPL item status: {item_status}')
+
+          evidence_path = Path('reports/production-hourly-e2e-evidence.json')
+          evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload production verification evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: production-hourly-backtest-e2e-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 30

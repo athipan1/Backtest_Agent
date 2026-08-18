@@ -35,6 +35,8 @@ jobs:
           from pathlib import Path
 
           base = (os.environ.get('DATABASE_AGENT_URL') or '').strip().rstrip('/')
+          if base and not base.startswith(('http://', 'https://')):
+              base = 'https://' + base
           key = (os.environ.get('DATABASE_AGENT_API_KEY') or '').strip()
           expected = {
               'run_id': os.environ['EXPECTED_RUN_ID'],

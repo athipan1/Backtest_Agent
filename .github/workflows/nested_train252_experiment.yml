@@ -1,0 +1,171 @@
+name: Nested Train-252 Top-10 Experiment
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  BACKTEST_MODE: nested_promotion
+  BACKTEST_ENVIRONMENT: production
+  BACKTEST_MAX_SYMBOLS: '10'
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_START: ''
+  BACKTEST_END: ''
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_FEE_BPS: '0'
+  BACKTEST_SLIPPAGE_BPS: '0'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '0.0'
+  BACKTEST_WALK_FORWARD_TRAIN_BARS: '252'
+  BACKTEST_WALK_FORWARD_TEST_BARS: '126'
+  BACKTEST_WALK_FORWARD_STEP_BARS: '126'
+  BACKTEST_WALK_FORWARD_MIN_WINDOWS: '4'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  train252:
+    name: 252-bar nested training experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout Scanner_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Load Scanner US universe
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          path = Path('Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          text = path.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
+          if not match:
+              raise SystemExit('Scanner US universe not found')
+          symbols = list(dict.fromkeys(re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))))
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected 10 symbols, got {symbols}')
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as fh:
+              fh.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
+          evidence = {
+              'scanner_commit': subprocess.check_output(['git','-C','Scanner_Agent','rev-parse','HEAD'], text=True).strip(),
+              'symbols': symbols,
+              'profile': {'train_bars': 252, 'test_bars': 126, 'step_bars': 126},
+              'threshold_policy': 'unchanged production gates',
+              'publish_to_database': False,
+          }
+          Path('reports/train252-source.json').write_text(json.dumps(evidence, indent=2), encoding='utf-8')
+          print(json.dumps(evidence, indent=2))
+          PY
+
+      - name: Run Top-10 nested Backtest with 252-bar train windows
+        run: python scripts/run_hourly_backtest.py
+
+      - name: Build diagnostic comparison evidence
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          result_path = Path('reports/hourly-backtest-result.json')
+          if not result_path.exists():
+              raise SystemExit('hourly Backtest result missing')
+          result = json.loads(result_path.read_text(encoding='utf-8'))
+          if result.get('status') != 'success':
+              raise SystemExit(f"Backtest failed operationally: {result.get('error')}")
+          data = result.get('data') or {}
+          rows = []
+          for item in data.get('items') or []:
+              selection = item.get('selection') or {}
+              nested = selection.get('nested_walk_forward') or {}
+              best = selection.get('best_overall') or {}
+              candidate_oos = best.get('walk_forward') or {}
+              rows.append({
+                  'symbol': item.get('symbol'),
+                  'status': item.get('status'),
+                  'selected_strategy_id': item.get('selected_strategy_id'),
+                  'best_overall_strategy_id': best.get('strategy_id'),
+                  'best_overall_score': best.get('score'),
+                  'best_overall_disqualification_reasons': best.get('disqualification_reasons') or [],
+                  'candidate_oos_passed': candidate_oos.get('passed'),
+                  'candidate_oos_median_sharpe_ratio': candidate_oos.get('median_sharpe_ratio'),
+                  'candidate_oos_profitable_window_rate': candidate_oos.get('profitable_window_rate'),
+                  'candidate_oos_stability_score': candidate_oos.get('stability_score'),
+                  'nested_passed': nested.get('passed'),
+                  'nested_evaluated_windows': nested.get('evaluated_windows'),
+                  'nested_train_eligible_window_rate': nested.get('train_eligible_window_rate'),
+                  'nested_abstention_rate': nested.get('abstention_rate'),
+                  'nested_profitable_window_rate': nested.get('profitable_window_rate'),
+                  'nested_median_sharpe_ratio': nested.get('median_sharpe_ratio'),
+                  'nested_stability_score': nested.get('stability_score'),
+                  'nested_latest_selected_strategy_id': nested.get('latest_selected_strategy_id'),
+                  'nested_reasons': nested.get('reasons') or [],
+                  'published': bool(item.get('published')),
+                  'promoted': bool(item.get('promoted')),
+              })
+          if len(rows) != 10:
+              raise SystemExit(f'Expected 10 result rows, got {len(rows)}')
+          if any(row['published'] or row['promoted'] for row in rows):
+              raise SystemExit('Diagnostic profile must not publish or promote')
+          evidence = {
+              'github_run_id': os.getenv('GITHUB_RUN_ID'),
+              'profile': {'train_bars': 252, 'test_bars': 126, 'step_bars': 126},
+              'production_thresholds_relaxed': False,
+              'history_days': data.get('history_days'),
+              'eligible_symbols': data.get('eligible_symbols') or [],
+              'ineligible_symbols': data.get('ineligible_symbols') or [],
+              'failed_symbols': data.get('failed_symbols') or [],
+              'selection_complete': data.get('selection_complete'),
+              'rows': rows,
+          }
+          Path('reports/train252-evidence.json').write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload experiment evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: nested-train252-top10-${{ github.run_id }}
+          path: reports/
+          retention-days: 30

@@ -39,30 +39,30 @@ _PROFILE_UNIQUE_TRIALS: Final[dict[str, tuple[str, ...]]] = {
 }
 
 _FIRST_SEEN_PROFILE: Final[dict[str, str]] = {
-    strategy_id: profile_id
-    for profile_id, strategy_ids in _PROFILE_UNIQUE_TRIALS.items()
-    for strategy_id in strategy_ids
-    if strategy_id
-    not in {
-        candidate_id
-        for earlier_profile, candidate_ids in _PROFILE_UNIQUE_TRIALS.items()
-        if earlier_profile != profile_id
-        for candidate_id in candidate_ids
-    }
+    "sma-crossover-balanced-v1": "strategy_research_v5",
+    "trend-following-balanced-v1": "strategy_research_v5",
+    "mean-reversion-balanced-v1": "strategy_research_v5",
+    "breakout-balanced-v1": "strategy_research_v5",
+    "trend-following-10-50-risk-v5": "strategy_research_v5",
+    "trend-following-20-100-risk-v5": "strategy_research_v5",
+    "breakout-10-40-risk-v5": "strategy_research_v5",
+    "breakout-20-55-risk-v5": "strategy_research_v5",
+    "trend-following-30-120-risk-v6": "strategy_research_v6",
+    "trend-following-50-150-risk-v6": "strategy_research_v6",
+    "breakout-20-80-risk-v6": "strategy_research_v6",
+    "breakout-30-120-risk-v6": "strategy_research_v6",
+    "mean-reversion-3-15-risk-v6": "strategy_research_v6",
+    "mean-reversion-10-40-risk-v6": "strategy_research_v6",
 }
-# The comprehension above cannot encode profile ordering reliably. Build the explicit
-# first-seen map below instead, preserving the append-only research chronology.
-_FIRST_SEEN_PROFILE = {}
-for _profile_id in ("strategy_research_v5", "strategy_research_v6"):
-    for _strategy_id in _PROFILE_UNIQUE_TRIALS[_profile_id]:
-        _FIRST_SEEN_PROFILE.setdefault(_strategy_id, _profile_id)
 
 
 def registered_trial_ids(profile_id: str) -> tuple[str, ...]:
     try:
         return _PROFILE_UNIQUE_TRIALS[profile_id]
     except KeyError as exc:
-        raise ValueError(f"Research profile is not registered for trial accounting: {profile_id}") from exc
+        raise ValueError(
+            f"Research profile is not registered for trial accounting: {profile_id}"
+        ) from exc
 
 
 def statistical_trial_count(profile_id: str) -> int:

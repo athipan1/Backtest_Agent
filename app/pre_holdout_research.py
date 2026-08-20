@@ -10,7 +10,16 @@ from app.nested_validation_v4 import (
     VALIDATION_PROFILE as NESTED_VALIDATION_PROFILE,
     run_walk_forward_multi_strategy_backtest_v4,
 )
-from app.research_candidate_profiles import research_profile
+from app.research_candidate_profiles import (
+    STRATEGY_RESEARCH_V6_PROFILE_ID,
+    research_profile,
+)
+from app.research_overfit import PBOCriteria, run_cscv_pbo
+from app.research_trial_registry import (
+    build_trial_registry_snapshot,
+    statistical_trial_count,
+)
+from app.statistical_validation import equity_returns
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -36,11 +45,16 @@ def _expected_rejection_stage(error: Exception) -> str | None:
 
 
 def _profile_metadata(profile_id: str, candidates: list[Any]) -> dict[str, Any]:
+    try:
+        trial_count = statistical_trial_count(profile_id)
+    except ValueError:
+        trial_count = len(candidates)
     return {
         "profile_id": profile_id,
         "candidate_count": len(candidates),
         "candidate_ids": [candidate.strategy_id for candidate in candidates],
         "strategy_families": [candidate.strategy for candidate in candidates],
+        "statistical_trial_count": trial_count,
     }
 
 
@@ -65,6 +79,127 @@ def _write_reports(report_path: Path, output: dict[str, Any]) -> None:
         )
 
 
+def _pbo_criteria_from_env() -> PBOCriteria:
+    return PBOCriteria(
+        enabled=True,
+        slice_count=int(os.getenv("BACKTEST_RESEARCH_PBO_SLICES", "8")),
+        min_observations_per_slice=int(
+            os.getenv("BACKTEST_RESEARCH_PBO_MIN_OBSERVATIONS_PER_SLICE", "10")
+        ),
+        max_probability_of_backtest_overfit=float(
+            os.getenv("BACKTEST_RESEARCH_MAX_PBO", "0.20")
+        ),
+    )
+
+
+def _candidate_return_series(request: Any) -> dict[str, list[float]]:
+    series: dict[str, list[float]] = {}
+    for candidate in request.candidates:
+        if not candidate.strategy_id:
+            raise RuntimeError("PBO research requires explicit candidate strategy_id")
+        run_request = promotion.build_run_request(candidate, request).model_copy(
+            deep=True,
+            update={"force_close_at_end": True},
+        )
+        result = promotion.run_backtest_with_risk(run_request)
+        series[candidate.strategy_id] = equity_returns(result)
+    return series
+
+
+def _cost_stress_multipliers() -> tuple[float, ...]:
+    raw = os.getenv("BACKTEST_RESEARCH_COST_STRESS_MULTIPLIERS", "1.0,1.5,2.0")
+    values = tuple(sorted({float(value.strip()) for value in raw.split(",") if value.strip()}))
+    if not values or any(value <= 0 for value in values):
+        raise RuntimeError("Research cost stress multipliers must contain positive values")
+    return values
+
+
+def _run_cost_stress(candidate: Any, request: Any) -> dict[str, Any]:
+    base_request = promotion.build_run_request(candidate, request).model_copy(
+        deep=True,
+        update={"force_close_at_end": True},
+    )
+    minimum_fee_bps = float(os.getenv("BACKTEST_RESEARCH_MIN_FEE_BPS", "1.0"))
+    minimum_slippage_bps = float(
+        os.getenv("BACKTEST_RESEARCH_MIN_SLIPPAGE_BPS", "5.0")
+    )
+    minimum_market_impact_bps = float(
+        os.getenv("BACKTEST_RESEARCH_MIN_MARKET_IMPACT_BPS", "2.0")
+    )
+    scenarios: list[dict[str, Any]] = []
+    min_trades = int(request.statistical_criteria.min_trades)
+
+    for multiplier in _cost_stress_multipliers():
+        stressed_request = base_request.model_copy(
+            deep=True,
+            update={
+                "fee_bps": max(base_request.fee_bps, minimum_fee_bps) * multiplier,
+                "slippage_bps": max(
+                    base_request.slippage_bps,
+                    minimum_slippage_bps,
+                )
+                * multiplier,
+                "market_impact_bps": max(
+                    base_request.market_impact_bps,
+                    minimum_market_impact_bps,
+                )
+                * multiplier,
+            },
+        )
+        result = promotion.run_backtest_with_risk(stressed_request)
+        metrics = result.metrics
+        positive_return = metrics.return_pct > 0
+        profit_factor_gate = metrics.profit_factor >= 1.0
+        trade_count_gate = metrics.trade_count >= min_trades
+        scenario_passed = positive_return and profit_factor_gate and trade_count_gate
+        scenarios.append(
+            {
+                "multiplier": multiplier,
+                "fee_bps": stressed_request.fee_bps,
+                "slippage_bps": stressed_request.slippage_bps,
+                "market_impact_bps": stressed_request.market_impact_bps,
+                "return_pct": metrics.return_pct,
+                "profit_factor": metrics.profit_factor,
+                "trade_count": metrics.trade_count,
+                "gates": {
+                    "positive_net_return": positive_return,
+                    "profit_factor": profit_factor_gate,
+                    "trade_count": trade_count_gate,
+                },
+                "passed": scenario_passed,
+            }
+        )
+
+    passed = all(scenario["passed"] for scenario in scenarios)
+    return {
+        "schema_version": "research-cost-stress.v1",
+        "passed": passed,
+        "min_fee_bps": minimum_fee_bps,
+        "min_slippage_bps": minimum_slippage_bps,
+        "min_market_impact_bps": minimum_market_impact_bps,
+        "scenarios": scenarios,
+        "reasons": []
+        if passed
+        else ["Selected strategy did not preserve positive net edge under cost stress"],
+    }
+
+
+def _trial_snapshot(
+    *,
+    profile_id: str,
+    candidates: list[Any],
+    dataset_fingerprint: str,
+) -> dict[str, Any] | None:
+    try:
+        return build_trial_registry_snapshot(
+            profile_id=profile_id,
+            candidate_ids=[candidate.strategy_id for candidate in candidates],
+            dataset_fingerprint=dataset_fingerprint,
+        )
+    except ValueError:
+        return None
+
+
 def run_pre_holdout_research(
     *,
     profile_id: str,
@@ -76,7 +211,7 @@ def run_pre_holdout_research(
     lifecycle, Risk/Execution hand-off, or final-holdout evaluation. It fetches
     enough history to reserve the production holdout, then exposes only the
     earlier research slice to nested v4 selection, full statistical validation,
-    and robustness validation.
+    robustness validation and, for v6+, preregistered overfit/cost controls.
     """
 
     if os.getenv("PUBLISH_TO_DATABASE", "").strip().lower() in {
@@ -91,6 +226,7 @@ def run_pre_holdout_research(
 
     candidates = research_profile(profile_id)
     profile = _profile_metadata(profile_id, candidates)
+    pbo_required = profile_id == STRATEGY_RESEARCH_V6_PROFILE_ID
     symbols = promotion._symbols_from_env()
     timeframe = os.getenv("BACKTEST_TIMEFRAME", "1d")
     default_start, default_end = promotion._default_date_range()
@@ -135,10 +271,21 @@ def run_pre_holdout_research(
                 minimum_research_bars=minimum_research_bars,
             )
             research_fingerprint = promotion.dataset_fingerprint({symbol: research_bars})
+            trial_registry = _trial_snapshot(
+                profile_id=profile_id,
+                candidates=candidates,
+                dataset_fingerprint=research_fingerprint,
+            )
             request = promotion.WalkForwardMultiStrategyRequest(
                 candidates=[candidate.model_copy(deep=True) for candidate in candidates],
                 **promotion._request_kwargs(symbol=symbol, bars=research_bars),
             )
+            pbo_evidence = None
+            if pbo_required:
+                pbo_evidence = run_cscv_pbo(
+                    _candidate_return_series(request),
+                    criteria=_pbo_criteria_from_env(),
+                )
             selection = run_walk_forward_multi_strategy_backtest_v4(request)
             sealed_holdout = {
                 "enabled": True,
@@ -157,6 +304,11 @@ def run_pre_holdout_research(
                         "rejection_stage": "nested_selection",
                         "rejection_reason": "no candidate passed nested v4 selection",
                         "research_dataset_fingerprint": research_fingerprint,
+                        "trial_registry": trial_registry,
+                        "pbo_evidence": (
+                            pbo_evidence.model_dump(mode="json") if pbo_evidence else None
+                        ),
+                        "cost_stress_evidence": None,
                         "selection": selection.model_dump(mode="json"),
                         "statistical_evidence": None,
                         "robustness_evidence": None,
@@ -178,11 +330,64 @@ def run_pre_holdout_research(
             selected_result = promotion.run_backtest_with_risk(run_request)
             statistical_evidence = promotion.run_statistical_validation(
                 selected_result,
-                candidate_count=len(request.candidates),
+                candidate_count=int(profile["statistical_trial_count"]),
                 periods_per_year=request.periods_per_year,
                 criteria=request.statistical_criteria,
             )
             robustness_evidence = promotion.run_promotion_robustness(run_request)
+
+            if pbo_evidence is not None and not pbo_evidence.passed:
+                items.append(
+                    {
+                        "symbol": symbol,
+                        "status": "no_eligible_strategy",
+                        "selected_strategy_id": selected_strategy_id,
+                        "pre_holdout_passed": False,
+                        "rejection_stage": "overfit_probability",
+                        "rejection_reason": "CSCV Probability of Backtest Overfitting gate did not pass",
+                        "research_dataset_fingerprint": research_fingerprint,
+                        "trial_registry": trial_registry,
+                        "pbo_evidence": pbo_evidence.model_dump(mode="json"),
+                        "cost_stress_evidence": None,
+                        "selection": selection.model_dump(mode="json"),
+                        "statistical_evidence": statistical_evidence.model_dump(mode="json"),
+                        "robustness_evidence": robustness_evidence.model_dump(mode="json"),
+                        "pre_holdout_metadata": None,
+                        "sealed_holdout": sealed_holdout,
+                        "result": selected_result.model_dump(mode="json"),
+                        "published": False,
+                        "promoted": False,
+                        "error": None,
+                    }
+                )
+                continue
+
+            cost_stress_evidence = _run_cost_stress(candidate, request) if pbo_required else None
+            if cost_stress_evidence is not None and not cost_stress_evidence["passed"]:
+                items.append(
+                    {
+                        "symbol": symbol,
+                        "status": "no_eligible_strategy",
+                        "selected_strategy_id": selected_strategy_id,
+                        "pre_holdout_passed": False,
+                        "rejection_stage": "cost_stress",
+                        "rejection_reason": "Selected strategy failed conservative transaction-cost stress",
+                        "research_dataset_fingerprint": research_fingerprint,
+                        "trial_registry": trial_registry,
+                        "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
+                        "cost_stress_evidence": cost_stress_evidence,
+                        "selection": selection.model_dump(mode="json"),
+                        "statistical_evidence": statistical_evidence.model_dump(mode="json"),
+                        "robustness_evidence": robustness_evidence.model_dump(mode="json"),
+                        "pre_holdout_metadata": None,
+                        "sealed_holdout": sealed_holdout,
+                        "result": selected_result.model_dump(mode="json"),
+                        "published": False,
+                        "promoted": False,
+                        "error": None,
+                    }
+                )
+                continue
 
             try:
                 pre_holdout_metadata = promotion._pre_holdout_metadata(
@@ -204,6 +409,9 @@ def run_pre_holdout_research(
                         "rejection_stage": stage,
                         "rejection_reason": str(exc),
                         "research_dataset_fingerprint": research_fingerprint,
+                        "trial_registry": trial_registry,
+                        "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
+                        "cost_stress_evidence": cost_stress_evidence,
                         "selection": selection.model_dump(mode="json"),
                         "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                         "robustness_evidence": robustness_evidence.model_dump(mode="json"),
@@ -228,6 +436,9 @@ def run_pre_holdout_research(
                     "rejection_stage": None,
                     "rejection_reason": None,
                     "research_dataset_fingerprint": research_fingerprint,
+                    "trial_registry": trial_registry,
+                    "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
+                    "cost_stress_evidence": cost_stress_evidence,
                     "selection": selection.model_dump(mode="json"),
                     "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                     "robustness_evidence": robustness_evidence.model_dump(mode="json"),
@@ -285,6 +496,8 @@ def run_pre_holdout_research(
             "final_holdout_bars": holdout_criteria.bars,
             "minimum_research_bars": minimum_research_bars,
             "minimum_bars": minimum_bars,
+            "pbo_required": pbo_required,
+            "cost_stress_required": pbo_required,
             "database_publish_allowed": False,
             "promotion_allowed": False,
             "execution_allowed": False,

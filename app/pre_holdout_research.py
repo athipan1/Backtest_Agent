@@ -12,6 +12,7 @@ from app.nested_validation_v4 import (
 )
 from app.research_candidate_profiles import (
     STRATEGY_RESEARCH_V6_PROFILE_ID,
+    STRATEGY_RESEARCH_V7_PROFILE_ID,
     research_profile,
 )
 from app.research_overfit import PBOCriteria, run_cscv_pbo
@@ -33,6 +34,10 @@ EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
     ("selected strategy statistical gates did not all pass", "statistical_validation"),
     ("selected strategy robustness validation did not pass", "robustness_validation"),
     ("nested promotion gates failed", "nested_validation"),
+)
+
+_STRICT_OVERFIT_PROFILES = frozenset(
+    {STRATEGY_RESEARCH_V6_PROFILE_ID, STRATEGY_RESEARCH_V7_PROFILE_ID}
 )
 
 
@@ -108,9 +113,13 @@ def _candidate_return_series(request: Any) -> dict[str, list[float]]:
 
 def _cost_stress_multipliers() -> tuple[float, ...]:
     raw = os.getenv("BACKTEST_RESEARCH_COST_STRESS_MULTIPLIERS", "1.0,1.5,2.0")
-    values = tuple(sorted({float(value.strip()) for value in raw.split(",") if value.strip()}))
+    values = tuple(
+        sorted({float(value.strip()) for value in raw.split(",") if value.strip()})
+    )
     if not values or any(value <= 0 for value in values):
         raise RuntimeError("Research cost stress multipliers must contain positive values")
+    if 2.0 not in values:
+        raise RuntimeError("Research cost stress must include the mandatory 2.0x scenario")
     return values
 
 
@@ -226,7 +235,7 @@ def run_pre_holdout_research(
 
     candidates = research_profile(profile_id)
     profile = _profile_metadata(profile_id, candidates)
-    pbo_required = profile_id == STRATEGY_RESEARCH_V6_PROFILE_ID
+    pbo_required = profile_id in _STRICT_OVERFIT_PROFILES
     symbols = promotion._symbols_from_env()
     timeframe = os.getenv("BACKTEST_TIMEFRAME", "1d")
     default_start, default_end = promotion._default_date_range()
@@ -362,7 +371,9 @@ def run_pre_holdout_research(
                 )
                 continue
 
-            cost_stress_evidence = _run_cost_stress(candidate, request) if pbo_required else None
+            cost_stress_evidence = (
+                _run_cost_stress(candidate, request) if pbo_required else None
+            )
             if cost_stress_evidence is not None and not cost_stress_evidence["passed"]:
                 items.append(
                     {
@@ -498,6 +509,7 @@ def run_pre_holdout_research(
             "minimum_bars": minimum_bars,
             "pbo_required": pbo_required,
             "cost_stress_required": pbo_required,
+            "mandatory_cost_stress_multiplier": 2.0 if pbo_required else None,
             "database_publish_allowed": False,
             "promotion_allowed": False,
             "execution_allowed": False,

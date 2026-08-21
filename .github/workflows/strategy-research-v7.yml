@@ -1,0 +1,248 @@
+name: Strategy Research v7
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'app/pre_holdout_research.py'
+      - 'app/research_candidate_profiles.py'
+      - 'app/research_overfit.py'
+      - 'app/research_trial_registry.py'
+      - 'scripts/run_research_candidate_profile.py'
+      - 'tests/test_research_overfit.py'
+      - 'tests/test_research_trial_registry.py'
+      - 'tests/test_strategy_research_v7.py'
+      - '.github/workflows/strategy-research-v7.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+  BACKTEST_RESEARCH_PROFILE: strategy_research_v7
+  BACKTEST_MAX_SYMBOLS: '10'
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_START: ''
+  BACKTEST_END: ''
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_NESTED_MINIMUM_BARS: '630'
+  BACKTEST_FINAL_HOLDOUT_ENABLED: 'true'
+  BACKTEST_FINAL_HOLDOUT_BARS: '252'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_FEE_BPS: '1'
+  BACKTEST_SLIPPAGE_BPS: '5'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'false'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '2'
+  BACKTEST_STATISTICAL_MIN_OBSERVATIONS: '30'
+  BACKTEST_STATISTICAL_MIN_TRADES: '10'
+  BACKTEST_STATISTICAL_MAX_ADJUSTED_P_VALUE: '0.05'
+  BACKTEST_STATISTICAL_MIN_PSR: '0.95'
+  BACKTEST_STATISTICAL_MIN_DSR: '0.90'
+  BACKTEST_STATISTICAL_MIN_BOOTSTRAP_RETURN: '0.0'
+  BACKTEST_STATISTICAL_MIN_HAC_CONFIDENCE: '0.95'
+  BACKTEST_RESEARCH_PBO_SLICES: '8'
+  BACKTEST_RESEARCH_PBO_MIN_OBSERVATIONS_PER_SLICE: '10'
+  BACKTEST_RESEARCH_MAX_PBO: '0.20'
+  BACKTEST_RESEARCH_COST_STRESS_MULTIPLIERS: '1.0,1.5,2.0'
+  BACKTEST_RESEARCH_MIN_FEE_BPS: '1.0'
+  BACKTEST_RESEARCH_MIN_SLIPPAGE_BPS: '5.0'
+  BACKTEST_RESEARCH_MIN_MARKET_IMPACT_BPS: '2.0'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  pre-holdout-research:
+    name: Scanner Top-10 strict sealed v7 research
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: strategy-research-v7-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Checkout Scanner_Agent universe
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: athipan1/Scanner_Agent
+          path: Scanner_Agent
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Load current Scanner US 10-symbol universe
+        run: |
+          mkdir -p reports
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          source = Path('Scanner_Agent/.github/workflows/scanner-market-smoke-test.yml')
+          text = source.read_text(encoding='utf-8')
+          match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
+          if not match:
+              raise SystemExit('Could not locate Scanner_Agent US market universe')
+          symbols = list(dict.fromkeys(re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))))
+          if len(symbols) != 10:
+              raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
+          evidence = {
+              'scanner_commit': subprocess.check_output(
+                  ['git', '-C', 'Scanner_Agent', 'rev-parse', 'HEAD'], text=True
+              ).strip(),
+              'symbols': symbols,
+              'source': str(source),
+          }
+          Path('reports/strategy-research-v7-scanner.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as handle:
+              handle.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          PY
+
+      - name: Run sealed Strategy Research v7
+        run: python scripts/run_research_candidate_profile.py
+
+      - name: Verify v7 profit and statistical gates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          scanner = json.loads(Path('reports/strategy-research-v7-scanner.json').read_text(encoding='utf-8'))
+          report = json.loads(Path('reports/research-candidate-profile-result.json').read_text(encoding='utf-8'))
+          data = report.get('data') or {}
+          profile = data.get('research_profile') or {}
+          items = data.get('items') or []
+          failures = []
+
+          structural = {
+              'run_success': report.get('status') == 'success',
+              'research_only': data.get('research_only') is True,
+              'profile_v7': profile.get('profile_id') == 'strategy_research_v7',
+              'candidate_count_10': profile.get('candidate_count') == 10,
+              'cumulative_trials_20': profile.get('statistical_trial_count') == 20,
+              'scanner_symbols_exact': data.get('symbols') == scanner.get('symbols') and len(items) == 10,
+              'pbo_required': data.get('pbo_required') is True,
+              'cost_stress_required': data.get('cost_stress_required') is True,
+              'mandatory_2x_cost': data.get('mandatory_cost_stress_multiplier') == 2.0,
+              'holdout_reserved': data.get('holdout_reserved') is True,
+              'holdout_never_opened': data.get('holdout_opened_count') == 0,
+              'database_disabled': data.get('database_publish_allowed') is False,
+              'promotion_disabled': data.get('promotion_allowed') is False,
+              'execution_disabled': data.get('execution_allowed') is False,
+              'no_operational_failures': data.get('failed_symbols') == [],
+          }
+          failures.extend(name for name, passed in structural.items() if not passed)
+
+          qualified = []
+          rows = []
+          for item in items:
+              symbol = item.get('symbol')
+              status = item.get('status')
+              registry = item.get('trial_registry') or {}
+              pbo = item.get('pbo_evidence') or {}
+              stats = item.get('statistical_evidence') or {}
+              stat_gates = stats.get('gates') or {}
+              cost = item.get('cost_stress_evidence') or {}
+              holdout = item.get('sealed_holdout') or {}
+              if status not in {'pre_holdout_candidate', 'no_eligible_strategy'}:
+                  failures.append(f'{symbol}: unexpected status {status!r}')
+              if registry.get('statistical_trial_count') != 20:
+                  failures.append(f'{symbol}: cumulative trial accounting is missing')
+              if pbo.get('schema_version') != 'research-pbo.v1':
+                  failures.append(f'{symbol}: PBO evidence is missing')
+              if holdout.get('status') != 'sealed_not_opened' or holdout.get('evaluation_allowed') is not False:
+                  failures.append(f'{symbol}: sealed holdout authority changed')
+              if item.get('published') or item.get('promoted'):
+                  failures.append(f'{symbol}: research reached downstream state')
+
+              two_x = next(
+                  (row for row in (cost.get('scenarios') or []) if row.get('multiplier') == 2.0),
+                  None,
+              )
+              if status == 'pre_holdout_candidate':
+                  qualified.append(symbol)
+                  gates = {
+                      'nested_oos': item.get('pre_holdout_passed') is True,
+                      'pbo': pbo.get('passed') is True and (pbo.get('probability_of_backtest_overfit') or 1.0) <= 0.20,
+                      'adjusted_p': stat_gates.get('adjusted_p_value') is True and (stats.get('adjusted_p_value') or 1.0) <= 0.05,
+                      'psr': stat_gates.get('probabilistic_sharpe_ratio') is True and (stats.get('probabilistic_sharpe_ratio') or 0.0) >= 0.95,
+                      'dsr': stat_gates.get('deflated_sharpe_probability') is True and (stats.get('deflated_sharpe_probability') or 0.0) >= 0.90,
+                      'all_stats': stats.get('passed') is True,
+                      'cost_stress': cost.get('passed') is True,
+                      'two_x_positive': bool(two_x) and two_x.get('passed') is True and (two_x.get('return_pct') or 0.0) > 0,
+                  }
+                  for gate, passed in gates.items():
+                      if not passed:
+                          failures.append(f'{symbol}: strict v7 gate failed: {gate}')
+              rows.append({
+                  'symbol': symbol,
+                  'status': status,
+                  'selected_strategy_id': item.get('selected_strategy_id'),
+                  'rejection_stage': item.get('rejection_stage'),
+                  'pbo': pbo.get('probability_of_backtest_overfit'),
+                  'adjusted_p_value': stats.get('adjusted_p_value'),
+                  'psr': stats.get('probabilistic_sharpe_ratio'),
+                  'dsr': stats.get('deflated_sharpe_probability'),
+                  'two_x_return_pct': two_x.get('return_pct') if two_x else None,
+              })
+
+          if not qualified:
+              failures.append('no symbol passed every strict pre-holdout v7 gate')
+
+          evidence = {
+              'scanner_commit': scanner.get('scanner_commit'),
+              'research_profile': profile,
+              'qualified_pre_holdout_symbols': qualified,
+              'holdout_opened_count': data.get('holdout_opened_count'),
+              'rows': rows,
+              'verification_failures': failures,
+          }
+          Path('reports/strategy-research-v7-evidence.json').write_text(
+              json.dumps(evidence, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          if failures:
+              raise SystemExit('Strategy Research v7 verification failed: ' + ' | '.join(failures))
+          PY
+
+      - name: Upload Strategy Research v7 evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: strategy-research-v7-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 30

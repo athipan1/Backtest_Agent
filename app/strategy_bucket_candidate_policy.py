@@ -12,6 +12,8 @@ from app.multi_strategy import MultiStrategyCandidate, default_multi_strategy_ca
 POLICY_SCHEMA = "strategy-bucket-candidate-policy.v1"
 SUPPORTED_BUCKETS = frozenset({"core_dividend", "value_rebound", "news_momentum"})
 DEFAULT_MANAGER_PRESELECTION_PATH = Path("reports/hourly-pre-backtest-discovery.json")
+CONTROLLED_NO_TRADE_MIN_TRADES = 2_147_483_647
+CONTROLLED_NO_TRADE_WARNING = "strategy_bucket_market_regime_no_compatible_strategy"
 
 BUCKET_STRATEGY_IDS: dict[str, tuple[str, ...]] = {
     "core_dividend": (
@@ -49,6 +51,7 @@ class StrategyBucketCandidatePolicy:
                 bucket: list(strategy_ids)
                 for bucket, strategy_ids in BUCKET_STRATEGY_IDS.items()
             },
+            "empty_intersection_outcome": "NO_TRADE",
             "fail_closed": True,
         }
 
@@ -225,26 +228,33 @@ def _filter_candidates(
     allowed_strategy_ids: Sequence[str],
 ) -> list[MultiStrategyCandidate]:
     allowed = set(allowed_strategy_ids)
-    selected = [
+    return [
         candidate.model_copy(deep=True)
         for candidate in source_candidates
         if _candidate_id(candidate) in allowed
     ]
-    if not selected:
-        raise RuntimeError(
-            "Strategy bucket and upstream candidate policies have no common Backtest strategy"
-        )
-    return selected
+
+
+def _force_no_trade_selection_criteria(existing: Any) -> dict[str, Any]:
+    if hasattr(existing, "model_dump"):
+        payload = existing.model_dump(mode="json")
+    elif isinstance(existing, dict):
+        payload = dict(existing)
+    else:
+        payload = {}
+    payload["min_trades"] = CONTROLLED_NO_TRADE_MIN_TRADES
+    return payload
 
 
 def apply_strategy_bucket_candidate_policy(runner_module: Any) -> StrategyBucketCandidatePolicy:
     """Intersect Manager's per-symbol bucket with any later candidate policy.
 
-    Apply this hook before the Market Regime policy. The Market Regime hook may then
-    supply its own candidate allow-list; this wrapper intersects that allow-list with
-    the Manager bucket instead of letting either policy override the other. No
-    Backtest scoring, nested walk-forward, statistics, robustness, sealed holdout,
-    promotion, Risk, or Execution gate is relaxed.
+    Apply this hook before the Market Regime policy. If both valid policies have no
+    common candidate, the request is forced into an explicitly ineligible selection
+    so the normal runner records ``no_eligible_strategy`` instead of treating the
+    disagreement as an operational failure. No Backtest scoring, nested walk-forward,
+    statistics, robustness, sealed holdout, promotion, Risk, or Execution gate is
+    relaxed.
     """
 
     policy = resolve_strategy_bucket_candidate_policy()
@@ -255,6 +265,8 @@ def apply_strategy_bucket_candidate_policy(runner_module: Any) -> StrategyBucket
     request_class = runner_module.WalkForwardMultiStrategyRequest
     original_run_id = runner_module._run_id
     original_publish = runner_module.publish_backtest_result
+    original_select = runner_module.run_walk_forward_multi_strategy_backtest
+    controlled_no_trade_symbols: set[str] = set()
 
     def policy_request_factory(**kwargs: Any):
         symbol = _symbol_from_request_kwargs(kwargs)
@@ -270,11 +282,29 @@ def apply_strategy_bucket_candidate_policy(runner_module: Any) -> StrategyBucket
             if supplied is not None
             else default_multi_strategy_candidates()
         )
+        if not source_candidates:
+            raise RuntimeError("Upstream candidate policy supplied no Backtest candidates")
         candidates = _filter_candidates(
             source_candidates=source_candidates,
             allowed_strategy_ids=allowed_ids,
         )
+        if not candidates:
+            controlled_no_trade_symbols.add(symbol)
+            kwargs["selection_criteria"] = _force_no_trade_selection_criteria(
+                kwargs.get("selection_criteria")
+            )
+            candidates = [source_candidates[0].model_copy(deep=True)]
         return request_class(candidates=candidates, **kwargs)
+
+    def policy_select(request: Any):
+        result = original_select(request)
+        symbol = str(request.symbols[0] if request.symbols else "").strip().upper()
+        if symbol not in controlled_no_trade_symbols:
+            return result
+        warnings = list(getattr(result, "warnings", []) or [])
+        if CONTROLLED_NO_TRADE_WARNING not in warnings:
+            warnings.append(CONTROLLED_NO_TRADE_WARNING)
+        return result.model_copy(update={"warnings": warnings})
 
     def policy_run_id(**kwargs: Any) -> str:
         policy_id = policy.policy_id
@@ -310,6 +340,7 @@ def apply_strategy_bucket_candidate_policy(runner_module: Any) -> StrategyBucket
         return original_publish(**{**kwargs, "metadata": metadata})
 
     runner_module.WalkForwardMultiStrategyRequest = policy_request_factory
+    runner_module.run_walk_forward_multi_strategy_backtest = policy_select
     runner_module._run_id = policy_run_id
     runner_module.publish_backtest_result = policy_publish
     return policy

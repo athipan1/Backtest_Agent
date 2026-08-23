@@ -7,6 +7,9 @@ from app.market_regime_candidate_policy import (
     apply_runtime_market_regime_candidate_policy,
 )
 from app.nested_validation_v4 import apply_nested_validation_v4
+from app.strategy_bucket_candidate_policy import (
+    apply_strategy_bucket_candidate_policy,
+)
 
 
 _CONFIGURED = False
@@ -20,6 +23,9 @@ def _configure_runner() -> None:
     if _CONFIGURED:
         return
     NESTED_VALIDATION_V4 = apply_nested_validation_v4(hourly_promotion_runner)
+    # Apply the per-symbol Manager bucket first. The Market Regime policy then
+    # intersects its allow-list with this narrower candidate set.
+    apply_strategy_bucket_candidate_policy(hourly_promotion_runner)
     apply_runtime_market_regime_candidate_policy(hourly_promotion_runner)
     _CONFIGURED = True
 

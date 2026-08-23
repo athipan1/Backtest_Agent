@@ -1,0 +1,219 @@
+name: Research Backtest 1Y 2Y
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/research-backtest-1y-2y.yml'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: .
+  BACKTEST_ENVIRONMENT: research
+  BACKTEST_MODE: legacy_fixed
+  BACKTEST_ACCOUNT_ID: '1'
+  BACKTEST_SKILL_ID: comparative-1y-2y-sma-crossover
+  BACKTEST_STRATEGY_ID: comparative-1y-2y-sma-crossover
+  BACKTEST_SYMBOLS: AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,AMD,AVGO,NFLX
+  BACKTEST_MAX_SYMBOLS: '10'
+  BACKTEST_TIMEFRAME: '1d'
+  BACKTEST_BAR_LIMIT: '10000'
+  BACKTEST_INITIAL_EQUITY: '100000'
+  BACKTEST_STRATEGY: sma_crossover
+  BACKTEST_FAST_WINDOW: '2'
+  BACKTEST_SLOW_WINDOW: '3'
+  BACKTEST_FEE_BPS: '1'
+  BACKTEST_SLIPPAGE_BPS: '5'
+  BACKTEST_RISK_PER_TRADE: '0.01'
+  BACKTEST_MAX_POSITION_PCT: '0.10'
+  BACKTEST_STOP_LOSS_PCT: '0.03'
+  BACKTEST_REWARD_RISK_RATIO: '2.0'
+  BACKTEST_USE_RISK_AGENT: 'true'
+  BACKTEST_MAX_TRADES_PER_DAY: '5'
+  BACKTEST_EMERGENCY_HALT: 'false'
+  BACKTEST_FORCE_CLOSE_AT_END: 'true'
+  BACKTEST_MAX_TOTAL_EXPOSURE_PCT: '1.0'
+  BACKTEST_MAX_OPEN_POSITIONS: '25'
+  BACKTEST_CASH_RESERVE_PCT: '0.0'
+  BACKTEST_MAX_NEW_POSITIONS_PER_BAR: '25'
+  BACKTEST_PERIODS_PER_YEAR: '252'
+  BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
+  BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
+  BACKTEST_MARKET_IMPACT_BPS: '2'
+  PUBLISH_TO_DATABASE: 'false'
+  ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+  ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+  ALPACA_DATA_API_URL: ${{ vars.ALPACA_DATA_API_URL || 'https://data.alpaca.markets' }}
+  ALPACA_DATA_FEED: ${{ vars.ALPACA_DATA_FEED || 'iex' }}
+
+jobs:
+  comparative-backtest:
+    name: Backtest ${{ matrix.window }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        window: [1y, 2y]
+
+    steps:
+      - name: Checkout Backtest_Agent
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Verify Alpaca market-data credentials
+        run: |
+          set -euo pipefail
+          test -n "$ALPACA_API_KEY_ID" || { echo 'ALPACA_API_KEY_ID missing'; exit 1; }
+          test -n "$ALPACA_SECRET_KEY" || { echo 'ALPACA_SECRET_KEY missing'; exit 1; }
+          echo 'Alpaca market-data credentials configured.'
+
+      - name: Configure fixed historical window
+        env:
+          WINDOW: ${{ matrix.window }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          window = os.environ['WINDOW']
+          config = {
+              '1y': ('2025-08-23T00:00:00Z', '240'),
+              '2y': ('2024-08-23T00:00:00Z', '480'),
+          }
+          start, minimum_bars = config[window]
+          end = '2026-08-23T23:59:59Z'
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as handle:
+              handle.write(f'BACKTEST_START={start}\n')
+              handle.write(f'BACKTEST_END={end}\n')
+              handle.write(f'BACKTEST_MINIMUM_BARS={minimum_bars}\n')
+              handle.write(f'BACKTEST_REPORT_PATH=reports/hourly-backtest-result.json\n')
+          print({'window': window, 'start': start, 'end': end, 'minimum_bars': minimum_bars})
+          PY
+
+      - name: Run engine regression tests
+        run: |
+          PYTHONPATH=. python -m pytest -q \
+            tests/test_portfolio_analytics.py \
+            tests/test_api.py
+
+      - name: Run comparative historical backtest
+        run: python scripts/run_hourly_backtest.py
+
+      - name: Build compact evidence summary
+        env:
+          WINDOW: ${{ matrix.window }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('reports/hourly-backtest-result.json')
+          report = json.loads(path.read_text(encoding='utf-8'))
+          data = report.get('data') or {}
+          items = data.get('items') or []
+          rows = []
+          for item in items:
+              result = item.get('result') or {}
+              metrics = result.get('metrics') or {}
+              rows.append({
+                  'symbol': item.get('symbol'),
+                  'status': item.get('status'),
+                  'return_pct': metrics.get('return_pct'),
+                  'net_profit': metrics.get('net_profit'),
+                  'trade_count': metrics.get('trade_count'),
+                  'win_rate': metrics.get('win_rate'),
+                  'profit_factor': metrics.get('profit_factor'),
+                  'expectancy': metrics.get('expectancy'),
+                  'max_drawdown': metrics.get('max_drawdown'),
+                  'sharpe_ratio': metrics.get('sharpe_ratio'),
+                  'sortino_ratio': metrics.get('sortino_ratio'),
+                  'calmar_ratio': metrics.get('calmar_ratio'),
+                  'benchmark_return_pct': metrics.get('benchmark_return_pct'),
+                  'excess_return_pct': metrics.get('excess_return_pct'),
+                  'risk_rejections': metrics.get('risk_rejections'),
+                  'allocation_rejections': metrics.get('allocation_rejections'),
+                  'partial_fills': metrics.get('partial_fills'),
+                  'liquidity_rejections': metrics.get('liquidity_rejections'),
+              })
+
+          successful = [r for r in rows if r['status'] == 'success']
+          total_trades = sum(int(r.get('trade_count') or 0) for r in successful)
+          weighted_expectancy = (
+              sum(float(r.get('expectancy') or 0.0) * int(r.get('trade_count') or 0) for r in successful) / total_trades
+              if total_trades else None
+          )
+          summary = {
+              'window': os.environ['WINDOW'],
+              'data_start': os.environ['BACKTEST_START'],
+              'data_end': os.environ['BACKTEST_END'],
+              'symbols': data.get('symbols') or [r['symbol'] for r in rows],
+              'all_succeeded': data.get('all_succeeded'),
+              'failed_symbols': data.get('failed_symbols') or [],
+              'assumptions': {
+                  'initial_equity': 100000,
+                  'fee_bps': 1,
+                  'slippage_bps': 5,
+                  'market_impact_bps': 2,
+                  'risk_per_trade': 0.01,
+                  'max_position_pct': 0.10,
+                  'stop_loss_pct': 0.03,
+                  'reward_risk_ratio': 2.0,
+                  'force_close_at_end': True,
+                  'mode': 'legacy_fixed_research_only',
+              },
+              'aggregate': {
+                  'successful_symbols': len(successful),
+                  'total_trades': total_trades,
+                  'profitable_symbols': sum(1 for r in successful if float(r.get('net_profit') or 0.0) > 0),
+                  'positive_expectancy_symbols': sum(1 for r in successful if float(r.get('expectancy') or 0.0) > 0),
+                  'beat_benchmark_symbols': sum(1 for r in successful if float(r.get('excess_return_pct') or 0.0) > 0),
+                  'weighted_expectancy': weighted_expectancy,
+                  'average_return_pct': (
+                      sum(float(r.get('return_pct') or 0.0) for r in successful) / len(successful)
+                      if successful else None
+                  ),
+                  'average_win_rate': (
+                      sum(float(r.get('win_rate') or 0.0) for r in successful) / len(successful)
+                      if successful else None
+                  ),
+                  'worst_max_drawdown': (
+                      min(float(r.get('max_drawdown') or 0.0) for r in successful)
+                      if successful else None
+                  ),
+              },
+              'rows': rows,
+              'production_promotion_evidence': False,
+          }
+          out = Path(f"reports/backtest-{os.environ['WINDOW']}-summary.json")
+          out.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          if data.get('all_succeeded') is not True:
+              raise SystemExit('At least one symbol backtest failed')
+          PY
+
+      - name: Upload ${{ matrix.window }} evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: research-backtest-${{ matrix.window }}-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 30

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -44,8 +45,11 @@ def test_bucket_strategy_profiles_are_narrow_and_explainable():
     )
 
 
-def test_disabled_policy_does_not_change_runner(monkeypatch):
+def test_disabled_policy_does_not_change_runner(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BACKTEST_STRATEGY_BUCKET_AWARE_ENABLED", raising=False)
+    monkeypatch.delenv("BACKTEST_STRATEGY_BUCKETS_JSON", raising=False)
+    monkeypatch.delenv("BACKTEST_STRATEGY_BUCKET_REPORT_PATH", raising=False)
     runner = _runner()
     original = runner.WalkForwardMultiStrategyRequest
 
@@ -53,6 +57,79 @@ def test_disabled_policy_does_not_change_runner(monkeypatch):
 
     assert policy.applied is False
     assert runner.WalkForwardMultiStrategyRequest is original
+
+
+def test_manager_preselection_report_auto_enables_policy(monkeypatch, tmp_path):
+    report_path = tmp_path / "hourly-pre-backtest-discovery.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "backtest_symbols": ["AAPL", "NVDA"],
+                "response": {
+                    "status": "success",
+                    "data": {
+                        "pre_backtest_selected_positions": [
+                            {
+                                "symbol": "AAPL",
+                                "strategy_bucket": "core_dividend",
+                                "bucket_classification_status": "classified",
+                                "evidence_gate_passed": True,
+                            },
+                            {
+                                "symbol": "NVDA",
+                                "strategy_bucket": "news_momentum",
+                                "bucket_classification_status": "classified",
+                                "evidence_gate_passed": True,
+                            },
+                        ]
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BACKTEST_STRATEGY_BUCKET_AWARE_ENABLED", raising=False)
+    monkeypatch.delenv("BACKTEST_STRATEGY_BUCKETS_JSON", raising=False)
+    monkeypatch.setenv("BACKTEST_STRATEGY_BUCKET_REPORT_PATH", str(report_path))
+
+    policy = resolve_strategy_bucket_candidate_policy()
+
+    assert policy.applied is True
+    assert policy.symbol_buckets == {
+        "AAPL": "core_dividend",
+        "NVDA": "news_momentum",
+    }
+    assert policy.source == f"manager_report:{report_path}"
+
+
+def test_manager_report_fails_closed_on_unclassified_position(monkeypatch, tmp_path):
+    report_path = tmp_path / "hourly-pre-backtest-discovery.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "backtest_symbols": ["AAPL"],
+                "response": {
+                    "data": {
+                        "pre_backtest_selected_positions": [
+                            {
+                                "symbol": "AAPL",
+                                "strategy_bucket": "core_dividend",
+                                "bucket_classification_status": "review",
+                                "evidence_gate_passed": True,
+                            }
+                        ]
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BACKTEST_STRATEGY_BUCKET_AWARE_ENABLED", raising=False)
+    monkeypatch.delenv("BACKTEST_STRATEGY_BUCKETS_JSON", raising=False)
+    monkeypatch.setenv("BACKTEST_STRATEGY_BUCKET_REPORT_PATH", str(report_path))
+
+    with pytest.raises(RuntimeError, match="not classified"):
+        resolve_strategy_bucket_candidate_policy()
 
 
 def test_news_momentum_filters_default_candidates(monkeypatch):

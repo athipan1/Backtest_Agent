@@ -7,15 +7,28 @@ import pytest
 
 from app.multi_strategy import default_multi_strategy_candidates
 from app.strategy_bucket_candidate_policy import (
+    CONTROLLED_NO_TRADE_MIN_TRADES,
+    CONTROLLED_NO_TRADE_WARNING,
     apply_strategy_bucket_candidate_policy,
     resolve_strategy_bucket_candidate_policy,
     strategy_ids_for_bucket,
 )
 
 
+class _FakeSelection:
+    def __init__(self, warnings=None):
+        self.warnings = list(warnings or [])
+
+    def model_copy(self, *, update):
+        return _FakeSelection(update.get("warnings", self.warnings))
+
+
 def _runner():
     def request_class(**kwargs):
-        return kwargs
+        return SimpleNamespace(**kwargs)
+
+    def select(_request):
+        return _FakeSelection()
 
     def run_id(**kwargs):
         return kwargs["strategy_id"]
@@ -25,6 +38,7 @@ def _runner():
 
     return SimpleNamespace(
         WalkForwardMultiStrategyRequest=request_class,
+        run_walk_forward_multi_strategy_backtest=select,
         _run_id=run_id,
         publish_backtest_result=publish,
     )
@@ -147,7 +161,7 @@ def test_news_momentum_filters_default_candidates(monkeypatch):
     )
 
     assert policy.applied is True
-    assert [candidate.strategy_id for candidate in request["candidates"]] == [
+    assert [candidate.strategy_id for candidate in request.candidates] == [
         "trend-following-balanced-v1",
         "breakout-balanced-v1",
     ]
@@ -174,9 +188,37 @@ def test_bucket_policy_intersects_later_regime_candidates(monkeypatch):
         candidates=upstream,
     )
 
-    assert [candidate.strategy_id for candidate in request["candidates"]] == [
+    assert [candidate.strategy_id for candidate in request.candidates] == [
         "trend-following-balanced-v1"
     ]
+
+
+def test_empty_bucket_regime_intersection_becomes_controlled_no_trade(monkeypatch):
+    monkeypatch.setenv("BACKTEST_STRATEGY_BUCKET_AWARE_ENABLED", "true")
+    monkeypatch.setenv(
+        "BACKTEST_STRATEGY_BUCKETS_JSON",
+        '{"NVDA":"news_momentum"}',
+    )
+    runner = _runner()
+    apply_strategy_bucket_candidate_policy(runner)
+    upstream = [
+        candidate
+        for candidate in default_multi_strategy_candidates()
+        if candidate.strategy_id == "mean-reversion-balanced-v1"
+    ]
+
+    request = runner.WalkForwardMultiStrategyRequest(
+        symbols=["NVDA"],
+        bars={"NVDA": []},
+        candidates=upstream,
+    )
+    result = runner.run_walk_forward_multi_strategy_backtest(request)
+
+    assert [candidate.strategy_id for candidate in request.candidates] == [
+        "mean-reversion-balanced-v1"
+    ]
+    assert request.selection_criteria["min_trades"] == CONTROLLED_NO_TRADE_MIN_TRADES
+    assert CONTROLLED_NO_TRADE_WARNING in result.warnings
 
 
 def test_policy_fails_closed_when_symbol_bucket_missing(monkeypatch):

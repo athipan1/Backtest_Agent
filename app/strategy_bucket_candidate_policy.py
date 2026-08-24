@@ -99,17 +99,39 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _manager_bucket_positions(data: Mapping[str, Any]) -> tuple[list[Any], str]:
+    """Resolve the Manager lane that authorized the exact Backtest symbols.
+
+    Newer Manager reports select broker-isolated Backtest candidates from
+    ``research_backtest_selection.selected``. Older reports used
+    ``pre_backtest_selected_positions`` directly. Prefer the research lane when
+    it is present so the bucket map is derived from the same rows that produced
+    ``backtest_symbols`` while retaining compatibility with legacy reports.
+    """
+
+    research_selection = data.get("research_backtest_selection")
+    if isinstance(research_selection, dict):
+        research_positions = research_selection.get("selected")
+        if isinstance(research_positions, list):
+            return research_positions, "research_backtest_selection.selected"
+
+    legacy_positions = data.get("pre_backtest_selected_positions")
+    if isinstance(legacy_positions, list):
+        return legacy_positions, "pre_backtest_selected_positions"
+
+    raise RuntimeError(
+        "Manager preselection report is missing both "
+        "research_backtest_selection.selected and pre_backtest_selected_positions"
+    )
+
+
 def _extract_manager_symbol_buckets(payload: Any) -> dict[str, str]:
     if not isinstance(payload, dict):
         raise RuntimeError("Manager preselection report root must be a JSON object")
 
     response = _dict(payload.get("response"))
     data = _dict(response.get("data"))
-    positions = data.get("pre_backtest_selected_positions")
-    if not isinstance(positions, list):
-        raise RuntimeError(
-            "Manager preselection report is missing pre_backtest_selected_positions"
-        )
+    positions, selection_source = _manager_bucket_positions(data)
 
     expected_symbols = [
         str(symbol or "").strip().upper()
@@ -141,7 +163,7 @@ def _extract_manager_symbol_buckets(payload: Any) -> dict[str, str]:
         unexpected = sorted(set(normalized) - set(expected_symbols))
         raise RuntimeError(
             "Manager strategy bucket map does not match Backtest symbols: "
-            f"missing={missing} unexpected={unexpected}"
+            f"source={selection_source} missing={missing} unexpected={unexpected}"
         )
     return normalized
 

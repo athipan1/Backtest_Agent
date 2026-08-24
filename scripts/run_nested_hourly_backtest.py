@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from app import hourly_promotion_runner
+from app.insufficient_history_rejection_policy import (
+    apply_insufficient_history_rejection_policy,
+)
 from app.market_regime_candidate_policy import (
     apply_runtime_market_regime_candidate_policy,
 )
@@ -23,6 +26,10 @@ def _configure_runner() -> None:
     if _CONFIGURED:
         return
     NESTED_VALIDATION_V4 = apply_nested_validation_v4(hourly_promotion_runner)
+    # Insufficient listing history is a deterministic candidate rejection, not an
+    # infrastructure failure. Install this after v4 so it wraps v4 gate rejection
+    # semantics while keeping all other failures fail-closed.
+    apply_insufficient_history_rejection_policy(hourly_promotion_runner)
     # Apply the per-symbol Manager bucket first. The Market Regime policy then
     # intersects its allow-list with this narrower candidate set.
     apply_strategy_bucket_candidate_policy(hourly_promotion_runner)

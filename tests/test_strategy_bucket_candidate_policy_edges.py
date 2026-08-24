@@ -78,7 +78,7 @@ def test_normalize_symbol_buckets_rejects_invalid_root_and_empty_symbol():
 def test_manager_report_rejects_invalid_contract_shapes():
     with pytest.raises(RuntimeError, match="root must be a JSON object"):
         _extract_manager_symbol_buckets([])
-    with pytest.raises(RuntimeError, match="missing pre_backtest_selected_positions"):
+    with pytest.raises(RuntimeError, match="missing both research_backtest_selection.selected and pre_backtest_selected_positions"):
         _extract_manager_symbol_buckets({"response": {"data": {}}})
     with pytest.raises(RuntimeError, match="position must be a JSON object"):
         _extract_manager_symbol_buckets(

@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from app.multi_strategy import MultiStrategyCandidate, default_multi_strategy_candidates
 
 POLICY_SCHEMA = "strategy-bucket-candidate-policy.v1"
+COMPATIBILITY_CONTRACT_SCHEMA = "strategy-bucket-compatibility.v1"
 SUPPORTED_BUCKETS = frozenset({"core_dividend", "value_rebound", "news_momentum"})
 DEFAULT_MANAGER_PRESELECTION_PATH = Path("reports/hourly-pre-backtest-discovery.json")
 CONTROLLED_NO_TRADE_MIN_TRADES = 2_147_483_647
@@ -31,6 +32,53 @@ BUCKET_STRATEGY_IDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def strategy_bucket_compatibility_contract() -> dict[str, Any]:
+    """Export the authoritative balanced-v1 bucket-to-strategy contract.
+
+    Manager may consume this read-only contract before spending an exact Backtest
+    slot. The contract changes no Backtest candidate, validation threshold or
+    promotion behavior; Backtest remains authoritative when the actual run starts.
+    """
+
+    candidates = {
+        str(candidate.strategy_id): candidate
+        for candidate in default_multi_strategy_candidates()
+        if candidate.strategy_id
+    }
+    bucket_families: dict[str, list[str]] = {}
+    for bucket, strategy_ids in BUCKET_STRATEGY_IDS.items():
+        families: list[str] = []
+        for strategy_id in strategy_ids:
+            candidate = candidates.get(strategy_id)
+            if candidate is None:
+                raise RuntimeError(
+                    "Strategy bucket contract references unknown candidate: "
+                    f"bucket={bucket} strategy_id={strategy_id}"
+                )
+            if candidate.strategy not in families:
+                families.append(candidate.strategy)
+        bucket_families[bucket] = families
+
+    return {
+        "schema_version": COMPATIBILITY_CONTRACT_SCHEMA,
+        "source_policy_schema": POLICY_SCHEMA,
+        "profile": "balanced_v1",
+        "supported_buckets": sorted(SUPPORTED_BUCKETS),
+        "bucket_strategy_ids": {
+            bucket: list(strategy_ids)
+            for bucket, strategy_ids in sorted(BUCKET_STRATEGY_IDS.items())
+        },
+        "bucket_strategy_families": {
+            bucket: list(families)
+            for bucket, families in sorted(bucket_families.items())
+        },
+        "empty_intersection_outcome": "NO_TRADE",
+        "manager_may_preflight": True,
+        "backtest_remains_authoritative": True,
+        "thresholds_relaxed": False,
+    }
+
+
 @dataclass(frozen=True)
 class StrategyBucketCandidatePolicy:
     applied: bool
@@ -40,6 +88,7 @@ class StrategyBucketCandidatePolicy:
     source: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
+        contract = strategy_bucket_compatibility_contract()
         return {
             "schema_version": POLICY_SCHEMA,
             "applied": self.applied,
@@ -47,10 +96,8 @@ class StrategyBucketCandidatePolicy:
             "policy_id": self.policy_id,
             "source": self.source,
             "symbol_buckets": dict(self.symbol_buckets),
-            "bucket_strategy_ids": {
-                bucket: list(strategy_ids)
-                for bucket, strategy_ids in BUCKET_STRATEGY_IDS.items()
-            },
+            "bucket_strategy_ids": contract["bucket_strategy_ids"],
+            "bucket_strategy_families": contract["bucket_strategy_families"],
             "empty_intersection_outcome": "NO_TRADE",
             "fail_closed": True,
         }
@@ -100,14 +147,7 @@ def _dict(value: Any) -> dict[str, Any]:
 
 
 def _manager_bucket_positions(data: Mapping[str, Any]) -> tuple[list[Any], str]:
-    """Resolve the Manager lane that authorized the exact Backtest symbols.
-
-    Newer Manager reports select broker-isolated Backtest candidates from
-    ``research_backtest_selection.selected``. Older reports used
-    ``pre_backtest_selected_positions`` directly. Prefer the research lane when
-    it is present so the bucket map is derived from the same rows that produced
-    ``backtest_symbols`` while retaining compatibility with legacy reports.
-    """
+    """Resolve the Manager lane that authorized the exact Backtest symbols."""
 
     research_selection = data.get("research_backtest_selection")
     if isinstance(research_selection, dict):

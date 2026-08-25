@@ -29,6 +29,21 @@ def _runner(tmp_path: Path, *, research=630, holdout=252, history_days=1825) -> 
     return path
 
 
+def _runner_with_history_expression(tmp_path: Path, expression: str) -> Path:
+    path = tmp_path / "hourly_promotion_runner.py"
+    path.write_text(
+        "\n".join(
+            [
+                f"DEFAULT_HISTORY_DAYS = {expression}",
+                "DEFAULT_MINIMUM_BARS = 630",
+                "DEFAULT_FINAL_HOLDOUT_BARS = 252",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_contract_reads_production_runner_defaults(tmp_path):
     runner = _runner(tmp_path)
     contract = resolve_history_contract({}, runner_path=runner)
@@ -39,6 +54,29 @@ def test_contract_reads_production_runner_defaults(tmp_path):
     assert contract["history_days"] == 1825
     assert contract["runner_source"] == str(runner)
     assert contract["thresholds_relaxed"] is False
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("5 * 365", 1825),
+        ("1800 + 25", 1825),
+        ("1900 - 75", 1825),
+        ("3650 // 2", 1825),
+        ("+1825", 1825),
+    ],
+)
+def test_safe_integer_arithmetic_in_runner_defaults_is_supported(
+    tmp_path,
+    expression,
+    expected,
+):
+    contract = resolve_history_contract(
+        {},
+        runner_path=_runner_with_history_expression(tmp_path, expression),
+    )
+
+    assert contract["history_days"] == expected
 
 
 def test_runtime_overrides_change_exported_total_without_changing_runner_defaults(tmp_path):
@@ -92,20 +130,24 @@ def test_missing_runner_constant_fails_closed(tmp_path):
         resolve_history_contract({}, runner_path=runner)
 
 
-def test_non_literal_runner_constant_fails_closed(tmp_path):
-    runner = tmp_path / "hourly_promotion_runner.py"
-    runner.write_text(
-        "\n".join(
-            [
-                "DEFAULT_HISTORY_DAYS = 5 * 365",
-                "DEFAULT_MINIMUM_BARS = 630",
-                "DEFAULT_FINAL_HOLDOUT_BARS = 252",
-            ]
-        ),
-        encoding="utf-8",
-    )
+def test_unsafe_runner_expression_fails_closed(tmp_path):
+    runner = _runner_with_history_expression(tmp_path, 'int("1825")')
 
-    with pytest.raises(HistoryContractError, match="not a literal"):
+    with pytest.raises(HistoryContractError, match="safe integer constant expression"):
+        resolve_history_contract({}, runner_path=runner)
+
+
+def test_division_by_zero_runner_expression_fails_closed(tmp_path):
+    runner = _runner_with_history_expression(tmp_path, "1825 // 0")
+
+    with pytest.raises(HistoryContractError, match="divides by zero"):
+        resolve_history_contract({}, runner_path=runner)
+
+
+def test_negative_runner_constant_fails_closed(tmp_path):
+    runner = _runner_with_history_expression(tmp_path, "-1825")
+
+    with pytest.raises(HistoryContractError, match="greater than zero"):
         resolve_history_contract({}, runner_path=runner)
 
 

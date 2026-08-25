@@ -10,6 +10,9 @@ from app.multi_strategy import router as multi_strategy_router
 from app.multi_strategy_walk_forward import router as multi_strategy_walk_forward_router
 from app.observability import METRICS, current_correlation_id
 from app.readiness import readiness_snapshot
+from app.strategy_bucket_candidate_policy import (
+    strategy_bucket_compatibility_contract,
+)
 
 
 BACKTEST_AGENT_TYPE = "backtest-agent"
@@ -97,6 +100,7 @@ def ready(response: Response) -> Dict[str, Any]:
                 "breakout",
             ],
             "multi_strategy_profile": "balanced_v1",
+            "strategy_bucket_compatibility": strategy_bucket_compatibility_contract(),
             "multi_strategy_selection": {
                 "exact_symbol_only": True,
                 "returns_best_eligible": True,

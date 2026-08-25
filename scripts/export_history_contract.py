@@ -118,7 +118,7 @@ def resolve_history_contract(
         "required_total_bars": required_bars,
         "history_days": history_days,
         "final_holdout_enabled": True,
-        "runner_source": str(runner_path.relative_to(REPO_ROOT)),
+        "runner_source": str(runner_path),
         "runner_defaults": {
             "research_minimum_bars": defaults["DEFAULT_MINIMUM_BARS"],
             "sealed_holdout_bars": defaults["DEFAULT_FINAL_HOLDOUT_BARS"],

@@ -27,6 +27,8 @@ _REQUIRED_DEFAULT_NAMES = (
     "DEFAULT_FINAL_HOLDOUT_BARS",
     "DEFAULT_HISTORY_DAYS",
 )
+_SAFE_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv)
+_SAFE_UNARYOPS = (ast.UAdd, ast.USub)
 
 
 class HistoryContractError(RuntimeError):
@@ -49,6 +51,33 @@ def _bool(value: object, *, default: bool = True) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _safe_constant_int(node: ast.AST, *, name: str) -> int:
+    """Evaluate only integer literals and simple integer arithmetic from source."""
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return int(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, _SAFE_UNARYOPS):
+        operand = _safe_constant_int(node.operand, name=name)
+        return operand if isinstance(node.op, ast.UAdd) else -operand
+    if isinstance(node, ast.BinOp) and isinstance(node.op, _SAFE_BINOPS):
+        left = _safe_constant_int(node.left, name=name)
+        right = _safe_constant_int(node.right, name=name)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if right == 0:
+            raise HistoryContractError(
+                f"production runner constant {name} divides by zero"
+            )
+        return left // right
+    raise HistoryContractError(
+        f"production runner constant {name} is not a safe integer constant expression"
+    )
+
+
 def _runner_defaults(path: Path = RUNNER_PATH) -> dict[str, int]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -64,12 +93,7 @@ def _runner_defaults(path: Path = RUNNER_PATH) -> dict[str, int]:
         for target in targets:
             if not isinstance(target, ast.Name) or target.id not in _REQUIRED_DEFAULT_NAMES:
                 continue
-            try:
-                value = ast.literal_eval(value_node)
-            except (ValueError, TypeError) as exc:
-                raise HistoryContractError(
-                    f"production runner constant {target.id} is not a literal"
-                ) from exc
+            value = _safe_constant_int(value_node, name=target.id)
             values[target.id] = _positive_int(value, name=target.id)
 
     missing = sorted(set(_REQUIRED_DEFAULT_NAMES) - set(values))

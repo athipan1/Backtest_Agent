@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from app import hourly_promotion_runner
+from app.exploratory_no_promotion_policy import (
+    apply_exploratory_no_promotion_policy,
+)
 from app.insufficient_history_rejection_policy import (
     apply_insufficient_history_rejection_policy,
 )
@@ -21,12 +24,14 @@ from app.strategy_bucket_candidate_policy import (
 _CONFIGURED = False
 NESTED_VALIDATION_V4: dict[str, Any] | None = None
 RESEARCH_STRATEGY_EXPANSION: dict[str, Any] | None = None
+EXPLORATORY_NO_PROMOTION: dict[str, Any] | None = None
 
 
 def _configure_runner() -> None:
     """Configure the production runner once, without import-time global mutation."""
 
     global _CONFIGURED, NESTED_VALIDATION_V4, RESEARCH_STRATEGY_EXPANSION
+    global EXPLORATORY_NO_PROMOTION
     if _CONFIGURED:
         return
     NESTED_VALIDATION_V4 = apply_nested_validation_v4(hourly_promotion_runner)
@@ -41,6 +46,11 @@ def _configure_runner() -> None:
     # intersects its allow-list with this narrower candidate set.
     apply_strategy_bucket_candidate_policy(hourly_promotion_runner)
     apply_runtime_market_regime_candidate_policy(hourly_promotion_runner)
+    # Exploratory candidates may produce ranked research evidence but can never
+    # emit an eligible production strategy into the Manager trade gate.
+    EXPLORATORY_NO_PROMOTION = apply_exploratory_no_promotion_policy(
+        hourly_promotion_runner
+    )
     _CONFIGURED = True
 
 

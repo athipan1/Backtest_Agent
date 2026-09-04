@@ -3,19 +3,24 @@ from __future__ import annotations
 import itertools
 import math
 from statistics import mean, median
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 
 PBO_SCHEMA_VERSION = "research-pbo.v1"
+MAX_RESEARCH_PBO: Final[float] = 0.20
 
 
 class PBOCriteria(BaseModel):
     enabled: bool = True
     slice_count: int = Field(default=8, ge=4, le=16)
     min_observations_per_slice: int = Field(default=10, ge=2, le=5000)
-    max_probability_of_backtest_overfit: float = Field(default=0.20, ge=0, le=1)
+    max_probability_of_backtest_overfit: float = Field(
+        default=MAX_RESEARCH_PBO,
+        ge=0,
+        le=MAX_RESEARCH_PBO,
+    )
 
     @model_validator(mode="after")
     def require_even_slice_count(self) -> "PBOCriteria":
@@ -66,8 +71,6 @@ def _score(values: list[float], indices: list[int]) -> float:
 def _oos_percentile(selected_score: float, all_scores: list[float]) -> float:
     less = sum(score < selected_score for score in all_scores)
     equal = sum(score == selected_score for score in all_scores)
-    # Mid-rank percentile in the open interval (0, 1), which keeps the logit finite
-    # after clipping and treats exact ties symmetrically.
     return (less + 0.5 * equal) / len(all_scores)
 
 
@@ -76,13 +79,7 @@ def run_cscv_pbo(
     *,
     criteria: PBOCriteria,
 ) -> PBOResult:
-    """Estimate Probability of Backtest Overfitting using deterministic CSCV.
-
-    The input must contain one return series per preregistered candidate over the same
-    research period. For every symmetric half-split of contiguous slices, the best
-    in-sample candidate is identified and then ranked on the complementary OOS data.
-    PBO is the fraction of selected candidates whose OOS logit rank is non-positive.
-    """
+    """Estimate Probability of Backtest Overfitting using deterministic CSCV."""
 
     candidate_ids = sorted(candidate_returns)
     candidate_count = len(candidate_ids)
@@ -142,8 +139,6 @@ def run_cscv_pbo(
     logits: list[float] = []
     percentiles: list[float] = []
 
-    # A split and its complement encode the same symmetric partition. Keeping only
-    # combinations containing slice zero removes that duplicate deterministically.
     for in_sample_slices in itertools.combinations(range(criteria.slice_count), half):
         if 0 not in in_sample_slices:
             continue

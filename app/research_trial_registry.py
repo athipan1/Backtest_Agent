@@ -9,50 +9,43 @@ TRIAL_REGISTRY_SCHEMA_VERSION: Final[str] = "research-trial-registry.v1"
 # reuse an existing control, but a newly introduced strategy identity must be declared
 # here before the research runner will evaluate it. That keeps multiple-testing
 # accounting from silently resetting when a new profile is created.
+_V5_TRIALS: Final[tuple[str, ...]] = (
+    "sma-crossover-balanced-v1",
+    "trend-following-balanced-v1",
+    "mean-reversion-balanced-v1",
+    "breakout-balanced-v1",
+    "trend-following-10-50-risk-v5",
+    "trend-following-20-100-risk-v5",
+    "breakout-10-40-risk-v5",
+    "breakout-20-55-risk-v5",
+)
+_V6_NEW_TRIALS: Final[tuple[str, ...]] = (
+    "trend-following-30-120-risk-v6",
+    "trend-following-50-150-risk-v6",
+    "breakout-20-80-risk-v6",
+    "breakout-30-120-risk-v6",
+    "mean-reversion-3-15-risk-v6",
+    "mean-reversion-10-40-risk-v6",
+)
+_V7_NEW_TRIALS: Final[tuple[str, ...]] = (
+    "sma-crossover-15-45-risk-v7",
+    "sma-crossover-30-90-risk-v7",
+    "trend-following-15-60-risk-v7",
+    "trend-following-40-160-risk-v7",
+    "breakout-15-60-risk-v7",
+    "mean-reversion-5-30-risk-v7",
+)
+
 _PROFILE_UNIQUE_TRIALS: Final[dict[str, tuple[str, ...]]] = {
-    "strategy_research_v5": (
-        "sma-crossover-balanced-v1",
-        "trend-following-balanced-v1",
-        "mean-reversion-balanced-v1",
-        "breakout-balanced-v1",
-        "trend-following-10-50-risk-v5",
-        "trend-following-20-100-risk-v5",
-        "breakout-10-40-risk-v5",
-        "breakout-20-55-risk-v5",
-    ),
-    "strategy_research_v6": (
-        "sma-crossover-balanced-v1",
-        "trend-following-balanced-v1",
-        "mean-reversion-balanced-v1",
-        "breakout-balanced-v1",
-        "trend-following-10-50-risk-v5",
-        "trend-following-20-100-risk-v5",
-        "breakout-10-40-risk-v5",
-        "breakout-20-55-risk-v5",
-        "trend-following-30-120-risk-v6",
-        "trend-following-50-150-risk-v6",
-        "breakout-20-80-risk-v6",
-        "breakout-30-120-risk-v6",
-        "mean-reversion-3-15-risk-v6",
-        "mean-reversion-10-40-risk-v6",
-    ),
+    "strategy_research_v5": _V5_TRIALS,
+    "strategy_research_v6": (*_V5_TRIALS, *_V6_NEW_TRIALS),
+    "strategy_research_v7": (*_V5_TRIALS, *_V6_NEW_TRIALS, *_V7_NEW_TRIALS),
 }
 
 _FIRST_SEEN_PROFILE: Final[dict[str, str]] = {
-    "sma-crossover-balanced-v1": "strategy_research_v5",
-    "trend-following-balanced-v1": "strategy_research_v5",
-    "mean-reversion-balanced-v1": "strategy_research_v5",
-    "breakout-balanced-v1": "strategy_research_v5",
-    "trend-following-10-50-risk-v5": "strategy_research_v5",
-    "trend-following-20-100-risk-v5": "strategy_research_v5",
-    "breakout-10-40-risk-v5": "strategy_research_v5",
-    "breakout-20-55-risk-v5": "strategy_research_v5",
-    "trend-following-30-120-risk-v6": "strategy_research_v6",
-    "trend-following-50-150-risk-v6": "strategy_research_v6",
-    "breakout-20-80-risk-v6": "strategy_research_v6",
-    "breakout-30-120-risk-v6": "strategy_research_v6",
-    "mean-reversion-3-15-risk-v6": "strategy_research_v6",
-    "mean-reversion-10-40-risk-v6": "strategy_research_v6",
+    **{strategy_id: "strategy_research_v5" for strategy_id in _V5_TRIALS},
+    **{strategy_id: "strategy_research_v6" for strategy_id in _V6_NEW_TRIALS},
+    **{strategy_id: "strategy_research_v7" for strategy_id in _V7_NEW_TRIALS},
 }
 
 

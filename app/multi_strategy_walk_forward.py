@@ -644,7 +644,12 @@ def _walk_forward_item(
         },
     }
     reasons = list(stability.reasons)
-    if not promotion_eligible:
+    gates["latest_training_selection"] = (
+        nested.latest_selection_eligible and nested.latest_selected_strategy_id == base_item.strategy_id
+    )
+    if not nested.passed:
+        reasons.extend(f"nested_outer_oos: {reason}" for reason in nested.reasons)
+    if not nested.latest_selection_eligible or nested.latest_selected_strategy_id != base_item.strategy_id:
         reasons.append("not selected by the latest nested training window")
     components = dict(base_item.score_components)
     components["candidate_oos_stability"] = round(

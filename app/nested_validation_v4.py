@@ -9,6 +9,7 @@ from typing import Any
 from app import multi_strategy_walk_forward as legacy
 from app.multi_strategy import build_run_request
 from app.risk_engine import run_backtest_with_risk
+from app.fold_evidence import execution_costs, training_evidence
 
 
 VALIDATION_PROFILE = "nested_walk_forward_v4"
@@ -74,6 +75,15 @@ def run_nested_walk_forward_stability_v4(
         )
         train_selection = legacy.run_multi_strategy_backtest(train_request)
         selected_item, safety_gates = _select_inner_training_candidate(train_selection)
+        diagnostics = training_evidence(train_selection, train_request, INNER_SELECTION_REQUIRED_GATES)
+        validation_period = {
+            "status": "train_slice_validation_no_separate_partition",
+            "start": train_slice[0].timestamp.isoformat(),
+            "end": train_slice[-1].timestamp.isoformat(),
+            "independent_from_training": False,
+            "policy": INNER_SELECTION_POLICY,
+            "oos_used_for_selection": False,
+        }
 
         if selected_item is None:
             windows.append(
@@ -91,6 +101,14 @@ def run_nested_walk_forward_stability_v4(
                     train_selection_eligible=False,
                     train_selection_score=None,
                     train_metrics=None,
+                    training_candidates=diagnostics,
+                    validation_period=validation_period,
+                    oos_execution_costs={
+                        "fees_paid": 0.0, "slippage_amount": 0.0,
+                        "fill_count": 0, "status": "cash_abstention_no_strategy_evaluation",
+                        "fee_bps_per_side": request.fee_bps,
+                        "slippage_bps_per_side": request.slippage_bps,
+                    },
                     capital_deployed=False,
                     profitable=False,
                     metrics=legacy._cash_hold_metrics(request.initial_equity),
@@ -158,6 +176,10 @@ def run_nested_walk_forward_stability_v4(
                 train_selection_eligible=True,
                 train_selection_score=selected_item.score,
                 train_metrics=selected_item.metrics,
+                training_candidates=diagnostics,
+                validation_period=validation_period,
+                train_execution_costs=getattr(selected_item, "execution_costs", {}),
+                oos_execution_costs=execution_costs(test_result, test_request),
                 capital_deployed=True,
                 profitable=profitable,
                 metrics=test_result.metrics,

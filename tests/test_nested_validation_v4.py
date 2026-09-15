@@ -248,3 +248,52 @@ def test_adapter_versions_profile_without_changing_downstream_authority():
     assert evidence["robustness_authority_changed"] is False
     assert evidence["sealed_holdout_authority_changed"] is False
     assert evidence["expected_gate_rejections_are_operational_failures"] is False
+
+
+def test_abstention_preserves_each_training_candidate_and_failed_gate(monkeypatch):
+    request = _request()
+    before = request.model_dump(mode="json")
+    item = _ranked_item(safety_passes=False)
+    monkeypatch.setattr(v4.legacy, "run_multi_strategy_backtest",
+                        lambda request: SimpleNamespace(ranked_results=[item]))
+    result = v4.run_nested_walk_forward_stability_v4(request)
+    for fold in result.windows:
+        evidence = fold.training_candidates[0]
+        assert evidence["failed_inner_gates"] == ["trade_count"]
+        assert evidence["rejection_category"] == "policy_rejection"
+        assert evidence["metrics"]["trade_count"] == item.metrics.trade_count
+        assert fold.decision == "NO_TRADE"
+        assert fold.oos_execution_costs["fees_paid"] == 0
+        assert fold.oos_execution_costs["status"] == "cash_abstention_no_strategy_evaluation"
+        assert fold.validation_period["independent_from_training"] is False
+        assert fold.validation_period["oos_used_for_selection"] is False
+    assert request.model_dump(mode="json") == before
+
+
+def test_missing_inner_gate_is_contract_failure_not_policy_rejection(monkeypatch):
+    item = _ranked_item()
+    del item.gates["statistical_observation_count"]
+    monkeypatch.setattr(v4.legacy, "run_multi_strategy_backtest",
+                        lambda request: SimpleNamespace(ranked_results=[item]))
+    result = v4.run_nested_walk_forward_stability_v4(_request())
+    evidence = result.windows[0].training_candidates[0]
+    assert evidence["rejection_category"] == "contract_failure"
+    assert evidence["missing_gate_fields"] == ["statistical_observation_count"]
+    assert result.windows[0].decision == "NO_TRADE"
+
+
+def test_sparse_training_reports_exact_shortfall_without_measured_oos(monkeypatch):
+    item = _ranked_item(safety_passes=False)
+    item.metrics = item.metrics.model_copy(update={"trade_count": 9})
+    monkeypatch.setattr(v4.legacy, "run_multi_strategy_backtest",
+                        lambda request: SimpleNamespace(ranked_results=[item]))
+    result = v4.run_nested_walk_forward_stability_v4(_request())
+    evidence = result.windows[0].training_candidates[0]
+    assert evidence["actual_gate_values"]["trade_count"] == {
+        "observed": 9, "threshold": 10, "operator": ">=", "passed": False,
+        "required_for_inner_selection": True}
+    assert evidence["sample_diagnostics"]["trade_shortfall"] == 1
+    assert result.sample_diagnostics["strategy_evaluated_windows"] == 0
+    assert result.sample_diagnostics["cash_abstention_windows"] == len(result.windows)
+    assert result.actual_gate_values["median_sharpe_ratio"]["observed"] is None
+    assert result.actual_gate_values["median_sharpe_ratio"]["passed"] is False

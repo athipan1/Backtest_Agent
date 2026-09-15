@@ -5,6 +5,9 @@ on:
   pull_request:
     paths:
       - 'app/pre_holdout_research.py'
+      - 'app/fold_evidence.py'
+      - 'app/nested_validation_v4.py'
+      - 'app/multi_strategy_walk_forward.py'
       - 'app/research_candidate_profiles.py'
       - 'app/research_overfit.py'
       - 'app/research_trial_registry.py'
@@ -125,6 +128,14 @@ jobs:
           PY
 
       - name: Run sealed Strategy Research v6
+        run: python scripts/run_research_candidate_profile.py
+
+      - name: Diagnose BSX and IA candidate-OOS cohort with sealed v6 research
+        env:
+          BACKTEST_SYMBOLS: BSX,IA
+          BACKTEST_RESEARCH_REPORT_PATH: reports/cohort/research-candidate-profile-result.json
+          # Match the archived production fee assumption; never discount costs.
+          BACKTEST_FEE_BPS: '10'
         run: python scripts/run_research_candidate_profile.py
 
       - name: Verify v6 overfit, cost and holdout controls

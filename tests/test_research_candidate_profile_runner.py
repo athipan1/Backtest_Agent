@@ -233,6 +233,71 @@ def test_no_eligible_candidate_is_safe_no_trade_and_skips_full_validation(
     assert output["data"]["failed_symbols"] == []
 
 
+def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    expected_ids = []
+    research_timestamps = []
+
+    def selection(request):
+        research_timestamps.extend(bar.timestamp for bar in request.bars["NVDA"])
+        expected_ids.extend(candidate.strategy_id for candidate in request.candidates[:2])
+        window = SimpleNamespace(
+            window=1,
+            train_start=request.bars["NVDA"][0].timestamp.isoformat(),
+            train_end=request.bars["NVDA"][4].timestamp.isoformat(),
+            metrics=Dumpable({"trade_count": 3, "sharpe_ratio": None}),
+            train_metrics=None,
+        )
+        return SimpleNamespace(
+            best_eligible=None,
+            nested_walk_forward=SimpleNamespace(passed=False),
+            ranked_results=[SimpleNamespace(
+                strategy_id=candidate.strategy_id, eligible=False,
+                walk_forward=SimpleNamespace(passed=index < 2, windows=[window]),
+            ) for index, candidate in enumerate(request.candidates)],
+            model_dump=lambda mode="json": {"selection_status": "no_eligible_strategy"},
+        )
+
+    provider = _configure_runtime(monkeypatch, selection=selection)
+    cost_ids, robustness_bars = [], []
+
+    def costs(candidate, request):
+        cost_ids.append(candidate.strategy_id)
+        assert [bar.timestamp for bar in request.bars["NVDA"]] == research_timestamps
+        return {"passed": False, "scenarios": []}
+
+    def robustness(request):
+        assert request.force_close_at_end is True
+        robustness_bars.append([bar.timestamp for bar in request.bars["NVDA"]])
+        return Dumpable({"passed": False})
+
+    monkeypatch.setattr("app.pre_holdout_research._run_cost_stress", costs)
+    monkeypatch.setattr(promotion, "run_promotion_robustness", robustness)
+    output = run_pre_holdout_research(
+        profile_id="strategy_research_v5", report_path=tmp_path / "research.json",
+    )
+
+    assert output["status"] == "success"
+    data = output["data"]
+    rows = data["candidate_oos_diagnostics"]["NVDA"]
+    assert [row["strategy_id"] for row in rows] == expected_ids == cost_ids
+    assert robustness_bars == [research_timestamps, research_timestamps]
+    assert research_timestamps == [bar.timestamp for bar in provider.bars[:10]]
+    for row in rows:
+        assert row["nested_oos_passed"] is False
+        assert row["candidate_eligible"] is False
+        assert row["promotion_allowed"] is False
+        assert row["parameter_probes_used_for_selection"] is False
+        fold = row["fold_regime_descriptors"][0]
+        assert fold["train_return"] == pytest.approx(105 / 101 - 1)
+        assert fold["oos_metrics"]["sharpe_ratio"] is None
+        assert fold["train_metrics"] is None
+    assert data["items"][0]["status"] == "no_eligible_strategy"
+    assert data["holdout_opened_count"] == 0
+    assert data["promotion_allowed"] is data["execution_allowed"] is False
+
+
 def test_expected_pre_holdout_rejection_is_safe_and_holdout_stays_sealed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

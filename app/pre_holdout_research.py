@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from datetime import datetime
+from statistics import pstdev
 
 from app import hourly_promotion_runner as promotion
 from app.nested_validation_v4 import (
@@ -200,6 +202,49 @@ def _trial_snapshot(
         return None
 
 
+def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, Any]]:
+    """Audit every candidate-OOS pass, including candidates rejected by nested OOS.
+
+    Perturbations are fixed robustness probes, never replacements for the
+    preregistered candidates or input to selection/promotion. Only research bars
+    are available here. Regime descriptors use each fold's training slice.
+    """
+    rows = []
+    for item in getattr(selection, "ranked_results", ()):
+        if item.walk_forward.passed is not True:
+            continue
+        candidate = promotion._selected_candidate(request, item.strategy_id)
+        run_request = promotion.build_run_request(candidate, request).model_copy(
+            deep=True, update={"force_close_at_end": True})
+        robustness = promotion.run_promotion_robustness(run_request)
+        fold_context = []
+        for window in item.walk_forward.windows:
+            start, end = datetime.fromisoformat(window.train_start), datetime.fromisoformat(window.train_end)
+            train = [bar for bar in request.bars[request.symbols[0]] if start <= bar.timestamp <= end]
+            returns = [current.close / previous.close - 1 for previous, current in zip(train, train[1:])]
+            fold_context.append({
+                "window": window.window,
+                "regime_source": "training_prices_only",
+                "train_return": train[-1].close / train[0].close - 1 if train else None,
+                "annualized_train_volatility": pstdev(returns) * request.periods_per_year ** .5 if len(returns) > 1 else None,
+                "oos_metrics": window.metrics.model_dump(mode="json"),
+                "train_metrics": window.train_metrics.model_dump(mode="json") if window.train_metrics else None,
+            })
+        rows.append({
+            "strategy_id": item.strategy_id,
+            "candidate_oos_passed": True,
+            "nested_oos_passed": selection.nested_walk_forward.passed,
+            "candidate_eligible": item.eligible,
+            "cost_stress": _run_cost_stress(candidate, request),
+            "parameter_and_execution_robustness": robustness.model_dump(mode="json"),
+            "fold_regime_descriptors": fold_context,
+            "diagnostic_only": True,
+            "parameter_probes_used_for_selection": False,
+            "promotion_allowed": False,
+        })
+    return rows
+
+
 def run_pre_holdout_research(
     *,
     profile_id: str,
@@ -255,6 +300,7 @@ def run_pre_holdout_research(
     )
 
     items: list[dict[str, Any]] = []
+    candidate_oos_diagnostics: dict[str, Any] = {}
     for symbol in symbols:
         try:
             bars = provider.fetch_bars(
@@ -287,6 +333,7 @@ def run_pre_holdout_research(
                     criteria=_pbo_criteria_from_env(),
                 )
             selection = run_walk_forward_multi_strategy_backtest_v4(request)
+            candidate_oos_diagnostics[symbol] = _candidate_oos_diagnostics(selection, request)
             sealed_holdout = {
                 "enabled": True,
                 "status": "sealed_not_opened",
@@ -485,6 +532,7 @@ def run_pre_holdout_research(
             "research_profile": profile,
             "symbols": symbols,
             "items": items,
+            "candidate_oos_diagnostics": candidate_oos_diagnostics,
             "pre_holdout_candidate_symbols": pre_holdout_candidates,
             "ineligible_symbols": ineligible,
             "failed_symbols": failed,

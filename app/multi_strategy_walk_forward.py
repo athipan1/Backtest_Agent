@@ -18,6 +18,7 @@ from app.multi_strategy import (
 )
 from app.risk_engine import run_backtest_with_risk
 from app.security import require_backtest_api_key
+from app.fold_evidence import execution_costs
 
 
 router = APIRouter()
@@ -73,6 +74,10 @@ class WalkForwardWindowResult(BaseModel):
     profitable: bool
     metrics: BacktestMetrics
     warnings: List[str] = Field(default_factory=list)
+    training_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    train_execution_costs: Dict[str, Any] = Field(default_factory=dict)
+    oos_execution_costs: Dict[str, Any] = Field(default_factory=dict)
+    validation_period: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WalkForwardStabilityResult(BaseModel):
@@ -107,6 +112,8 @@ class WalkForwardStabilityResult(BaseModel):
     gates: Dict[str, bool] = Field(default_factory=dict)
     reasons: List[str] = Field(default_factory=list)
     windows: List[WalkForwardWindowResult] = Field(default_factory=list)
+    actual_gate_values: Dict[str, Any] = Field(default_factory=dict)
+    sample_diagnostics: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WalkForwardMultiStrategyRequest(MultiStrategyBacktestRequest):
@@ -406,6 +413,17 @@ def _summarize_windows(
         if window.selected_strategy_id is not None
     )
     latest = windows[-1] if windows else None
+    gate_thresholds = {
+        "window_count": (criteria.min_windows, ">="),
+        "train_eligible_window_rate": (criteria.min_train_eligible_window_rate, ">="),
+        "eligible_selection_rate": (criteria.min_eligible_selection_rate, ">="),
+        "max_abstention_rate": (criteria.max_abstention_rate, "<="),
+        "profitable_window_rate": (criteria.min_profitable_window_rate, ">="),
+        "median_sharpe_ratio": (criteria.min_median_sharpe_ratio, ">="),
+        "median_profit_factor": (criteria.min_median_profit_factor, ">="),
+        "worst_max_drawdown": (criteria.max_drawdown_floor, ">="),
+        "kill_switch_safety": (criteria.max_kill_switch_events, "<="),
+    }
     return WalkForwardStabilityResult(
         status=status,
         selection_method=selection_method,
@@ -449,6 +467,17 @@ def _summarize_windows(
         gates=gates,
         reasons=reasons,
         windows=windows,
+        actual_gate_values={name: {"observed": observations[name],
+            "threshold": threshold, "operator": operator, "passed": gates[name]}
+            for name, (threshold, operator) in gate_thresholds.items()},
+        sample_diagnostics={
+            "cash_abstention_windows": no_trade_windows,
+            "strategy_evaluated_windows": len(performance_windows),
+            "oos_trade_count": sum(window.metrics.trade_count for window in performance_windows),
+            "sparse_oos_windows": [window.window for window in performance_windows
+                                  if window.metrics.trade_count < criteria.min_window_trades],
+            "undefined_sharpe_is_not_zero": True,
+        },
     )
 
 
@@ -501,6 +530,12 @@ def run_candidate_walk_forward_stability(
                 train_selection_eligible=True,
                 train_selection_score=0.0,
                 train_metrics=train_result.metrics,
+                train_execution_costs=execution_costs(train_result, train_request),
+                oos_execution_costs=execution_costs(test_result, test_request),
+                validation_period={
+                    "status": "no_separate_validation_slice",
+                    "selection_method": "fixed_candidate_oos",
+                },
                 capital_deployed=True,
                 profitable=profitable,
                 metrics=test_result.metrics,

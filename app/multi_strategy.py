@@ -133,6 +133,7 @@ class MultiStrategyResultItem(BaseModel):
     metrics: BacktestMetrics
     statistical_evidence: StatisticalValidationResult
     warnings: List[str] = Field(default_factory=list)
+    execution_costs: Dict[str, Any] = Field(default_factory=dict)
 
 
 class MultiStrategyBacktestResult(BaseModel):
@@ -349,6 +350,7 @@ def _statistical_score_component(
 def run_multi_strategy_backtest(
     request: MultiStrategyBacktestRequest,
 ) -> MultiStrategyBacktestResult:
+    from app.fold_evidence import execution_costs
     evaluated: List[tuple[MultiStrategyResultItem, BacktestRunResult]] = []
     candidate_count = len(request.candidates)
 
@@ -396,6 +398,7 @@ def run_multi_strategy_backtest(
                     metrics=result.metrics,
                     statistical_evidence=statistical_evidence,
                     warnings=result.warnings,
+                    execution_costs=execution_costs(result, run_request),
                 ),
                 result,
             )

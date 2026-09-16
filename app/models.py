@@ -5,6 +5,8 @@ from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.execution_policy import ExecutionRealismPolicy
+
 
 T = TypeVar("T")
 StrategyName = Literal["sma_crossover", "trend_following", "mean_reversion", "breakout"]
@@ -41,6 +43,7 @@ class PriceBar(BaseModel):
 
 
 class BacktestRunRequest(BaseModel):
+    execution_policy: ExecutionRealismPolicy = Field(default_factory=ExecutionRealismPolicy)
     symbols: List[str] = Field(min_length=1)
     initial_equity: float = Field(gt=0)
     bars: Dict[str, List[PriceBar]]

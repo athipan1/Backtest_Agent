@@ -119,6 +119,16 @@ def _closed_trade_pnls(result: BacktestRunResult) -> List[float]:
 def _neighboring_windows(
     request: BacktestRobustnessRequest,
 ) -> List[tuple[int, int]]:
+    if request.strategy in {"mean_reversion", "breakout"}:
+        # These signals do not read fast_window. Counting changes to it counted
+        # baseline replicas as independent robustness probes. Four fixed probes
+        # vary the actual signal parameter; they never enter candidate selection.
+        return sorted(
+            (request.fast_window, request.slow_window + offset * request.sensitivity_slow_delta)
+            for offset in (-2, -1, 1, 2)
+            if request.slow_window + offset * request.sensitivity_slow_delta
+            > max(1, request.fast_window)
+        )
     fast_values = {
         request.fast_window - request.sensitivity_fast_delta,
         request.fast_window,

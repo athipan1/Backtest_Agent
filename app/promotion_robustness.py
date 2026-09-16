@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.execution_policy import (
     ExecutionRealismPolicy,
-    execution_policy_context,
     resolve_execution_policy,
 )
 from app.models import (
@@ -57,6 +56,7 @@ class StressScenarioEvidence(BaseModel):
 class PromotionRobustnessEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
+    method_version: Literal["promotion-robustness.v2"] = "promotion-robustness.v2"
     status: Literal["completed"] = "completed"
     passed: bool
     scenario_pass_rate: float
@@ -185,10 +185,11 @@ def _run_request(
         deep=True,
         update={"force_close_at_end": True, **(updates or {})},
     )
-    if policy is None:
-        return run_backtest_with_risk(scenario)
-    with execution_policy_context(policy):
-        return run_backtest_with_risk(scenario)
+    if policy is not None:
+        # The risk runner creates its own context from the request. An outer
+        # context alone is silently replaced and never stresses actual prices.
+        scenario = scenario.model_copy(update={"execution_policy": policy})
+    return run_backtest_with_risk(scenario)
 
 
 def run_promotion_robustness(

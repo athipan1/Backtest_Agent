@@ -44,14 +44,19 @@ def build_challenger_evidence(selection: Mapping[str, Any]) -> dict[str, Any]:
         best and safety_passed and quality_passed and single_sharpe_near_miss
     )
 
-    candidate_oos = _dict(best.get("candidate_oos"))
+    # The selection result serializes Candidate OOS as ``walk_forward``.
+    # Preserve the legacy input alias only when the canonical field is absent.
+    candidate_oos = _dict(
+        best.get("walk_forward") if "walk_forward" in best else best.get("candidate_oos")
+    )
     metrics = {
         "median_sharpe_ratio": candidate_oos.get("median_sharpe_ratio"),
         "median_profit_factor": candidate_oos.get("median_profit_factor"),
         "profitable_window_rate": candidate_oos.get("profitable_window_rate"),
         "worst_max_drawdown": candidate_oos.get("worst_max_drawdown"),
-        "window_count": candidate_oos.get("evaluated_windows")
-        or candidate_oos.get("window_count"),
+        "window_count": candidate_oos.get(
+            "evaluated_windows", candidate_oos.get("window_count")
+        ),
     }
 
     return {

@@ -22,6 +22,8 @@ from app.research_trial_registry import (
     statistical_trial_count,
 )
 from app.statistical_validation import equity_returns
+from app.fold_evidence import execution_costs
+from app.execution_policy import execution_policy_metadata
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -150,6 +152,8 @@ def _run_cost_stress(candidate: Any, request: Any) -> dict[str, Any]:
         )
         result = promotion.run_backtest_with_risk(stressed_request)
         metrics = result.metrics
+        fills = getattr(result, "trades", None)
+        traded_notional = sum(t.quantity * t.price for t in fills) if fills is not None else None
         positive_return = metrics.return_pct > 0
         profit_factor_gate = metrics.profit_factor >= 1.0
         trade_count_gate = metrics.trade_count >= min_trades
@@ -163,6 +167,12 @@ def _run_cost_stress(candidate: Any, request: Any) -> dict[str, Any]:
                 "return_pct": metrics.return_pct,
                 "profit_factor": metrics.profit_factor,
                 "trade_count": metrics.trade_count,
+                "execution_policy": execution_policy_metadata(stressed_request),
+                "execution_costs": execution_costs(result, stressed_request),
+                "traded_notional": round(traded_notional, 2) if traded_notional is not None else None,
+                "turnover_over_initial_equity": traded_notional / stressed_request.initial_equity if traded_notional is not None else None,
+                "gross_return": None,
+                "gross_return_status": "not_recorded_separately_from_costs",
                 "gates": {
                     "positive_net_return": positive_return,
                     "profit_factor": profit_factor_gate,

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterable
 
 from app.models import PriceBar
+from app.api_contracts import StrictPriceBar
 
 
 class HistoricalDataError(RuntimeError):
@@ -28,7 +29,7 @@ def validate_price_bars(raw_bars: Iterable[dict], *, symbol: str, minimum_bars: 
     timestamps = set()
     for index, item in enumerate(raw_bars):
         try:
-            bar = PriceBar.model_validate(item)
+            bar = StrictPriceBar.model_validate(item)
         except Exception as exc:
             raise HistoricalDataError(f"{symbol} bar {index} is invalid: {exc}") from exc
         if bar.timestamp in timestamps:

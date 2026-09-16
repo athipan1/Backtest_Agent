@@ -53,3 +53,21 @@ def test_safety_failure_is_never_observation_candidate():
     result = build_challenger_evidence(_selection(sharpe=False, safety=False))
     assert result["observation_candidate"] is False
     assert result["safety"]["safety_gates_passed"] is False
+
+
+def test_serialized_selection_exports_canonical_walk_forward_metrics():
+    selection = _selection(sharpe=False)
+    best = selection["best_overall"]
+    best["walk_forward"] = best.pop("candidate_oos")
+    result = build_challenger_evidence(selection)
+    assert result["candidate_oos_metrics"]["median_sharpe_ratio"] == 0.61
+    assert result["candidate_oos_metrics"]["window_count"] == 6
+    assert result["safety"]["production_eligible"] is False
+
+
+def test_canonical_metrics_do_not_fall_back_to_stale_alias_or_replace_zero():
+    selection = _selection(sharpe=False)
+    selection["best_overall"]["walk_forward"] = {"evaluated_windows": 0}
+    result = build_challenger_evidence(selection)
+    assert result["candidate_oos_metrics"]["median_sharpe_ratio"] is None
+    assert result["candidate_oos_metrics"]["window_count"] == 0

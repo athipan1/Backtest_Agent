@@ -32,8 +32,8 @@ env:
   BACKTEST_FINAL_HOLDOUT_ENABLED: 'true'
   BACKTEST_FINAL_HOLDOUT_BARS: '252'
   BACKTEST_INITIAL_EQUITY: '100000'
-  BACKTEST_FEE_BPS: '0'
-  BACKTEST_SLIPPAGE_BPS: '0'
+  BACKTEST_FEE_BPS: '1'
+  BACKTEST_SLIPPAGE_BPS: '5'
   BACKTEST_RISK_PER_TRADE: '0.01'
   BACKTEST_MAX_POSITION_PCT: '0.10'
   BACKTEST_STOP_LOSS_PCT: '0.03'
@@ -49,7 +49,7 @@ env:
   BACKTEST_PERIODS_PER_YEAR: '252'
   BACKTEST_ANNUAL_RISK_FREE_RATE: '0.0'
   BACKTEST_MAX_VOLUME_PARTICIPATION_PCT: '1.0'
-  BACKTEST_MARKET_IMPACT_BPS: '0.0'
+  BACKTEST_MARKET_IMPACT_BPS: '2'
   PUBLISH_TO_DATABASE: 'false'
   ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
   ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -168,7 +168,18 @@ jobs:
           items = data.get('items') or []
           failures = []
 
+          execution_cost_baseline = {
+              'fee_bps': 1.0,
+              'slippage_bps': 5.0,
+              'market_impact_bps': 2.0,
+          }
+          configured_costs = {
+              'fee_bps': float(__import__('os').environ['BACKTEST_FEE_BPS']),
+              'slippage_bps': float(__import__('os').environ['BACKTEST_SLIPPAGE_BPS']),
+              'market_impact_bps': float(__import__('os').environ['BACKTEST_MARKET_IMPACT_BPS']),
+          }
           structural = {
+              'nonzero_execution_cost_baseline': configured_costs == execution_cost_baseline,
               'run_success': report.get('status') == 'success',
               'research_only': data.get('research_only') is True,
               'validation_profile_v4': data.get('validation_profile') == 'nested_walk_forward_v4',
@@ -222,6 +233,7 @@ jobs:
 
           evidence = {
               'scanner_commit': scanner.get('scanner_commit'),
+              'execution_cost_baseline': configured_costs,
               'symbols': data.get('symbols'),
               'validation_profile': data.get('validation_profile'),
               'research_profile': data.get('research_profile'),

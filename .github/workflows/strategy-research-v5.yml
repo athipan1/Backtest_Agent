@@ -104,6 +104,7 @@ jobs:
           match = re.search(r'SYMBOLS\s*=\s*\[(.*?)\]\s*\n\s*FALLBACK_SOURCES', text, re.S)
           if not match:
               raise SystemExit('Could not locate Scanner_Agent US market universe')
+          requested = os.getenv('TARGET_RESEARCH_SYMBOLS', '').strip()
           symbols = list(
               dict.fromkeys(
                   re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))

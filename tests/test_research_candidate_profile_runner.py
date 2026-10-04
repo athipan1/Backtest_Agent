@@ -246,8 +246,11 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
             window=1,
             train_start=request.bars["NVDA"][0].timestamp.isoformat(),
             train_end=request.bars["NVDA"][4].timestamp.isoformat(),
-            metrics=Dumpable({"trade_count": 3, "sharpe_ratio": None}),
+            metrics=Dumpable({"trade_count": 3, "sharpe_ratio": None, "partial_fills": 2, "liquidity_rejections": 1}),
             train_metrics=None,
+            warnings=["force-close remainder constrained by bar volume"],
+            train_execution_costs={"partial_fills": 1, "liquidity_rejections": 0},
+            oos_execution_costs={"partial_fills": 2, "liquidity_rejections": 1},
         )
         return SimpleNamespace(
             best_eligible=None,
@@ -293,6 +296,11 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
         assert fold["train_return"] == pytest.approx(105 / 101 - 1)
         assert fold["oos_metrics"]["sharpe_ratio"] is None
         assert fold["train_metrics"] is None
+        assert fold["execution_diagnostics"] == {
+            "warnings": ["force-close remainder constrained by bar volume"],
+            "train_execution_costs": {"partial_fills": 1, "liquidity_rejections": 0},
+            "oos_execution_costs": {"partial_fills": 2, "liquidity_rejections": 1},
+        }
     assert data["items"][0]["status"] == "no_eligible_strategy"
     assert data["holdout_opened_count"] == 0
     assert data["promotion_allowed"] is data["execution_allowed"] is False

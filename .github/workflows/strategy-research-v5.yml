@@ -105,18 +105,39 @@ jobs:
           if not match:
               raise SystemExit('Could not locate Scanner_Agent US market universe')
           requested = os.getenv('TARGET_RESEARCH_SYMBOLS', '').strip()
-          symbols = list(
+          scanner_symbols = list(
               dict.fromkeys(
                   re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))
               )
           )
-          if not requested and len(symbols) != 10:
-              raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
+          if requested:
+              raw_symbols = [value.strip().upper() for value in requested.split(',')]
+              if any(not value for value in raw_symbols):
+                  raise SystemExit('Target research symbols contain an empty value')
+              invalid = [
+                  value for value in raw_symbols
+                  if re.fullmatch(r'[A-Z][A-Z0-9.-]{0,19}', value) is None
+              ]
+              if invalid:
+                  raise SystemExit(f'Invalid target research symbols: {invalid}')
+              symbols = list(dict.fromkeys(raw_symbols))
+              if not symbols:
+                  raise SystemExit('Target research symbols resolved to an empty universe')
+              if len(symbols) > 10:
+                  raise SystemExit(f'Target research symbols exceed BACKTEST_MAX_SYMBOLS=10: {symbols}')
+              universe_source = 'workflow_dispatch'
+          else:
+              symbols = scanner_symbols
+              if len(symbols) != 10:
+                  raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
+              universe_source = 'scanner_top_10'
           evidence = {
               'scanner_commit': subprocess.check_output(
                   ['git', '-C', 'Scanner_Agent', 'rev-parse', 'HEAD'], text=True
               ).strip(),
               'symbols': symbols,
+              'universe_source': universe_source,
+              'requested_symbols': requested,
               'source': str(source),
           }
           Path('reports/strategy-research-v5-scanner.json').write_text(

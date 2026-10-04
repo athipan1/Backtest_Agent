@@ -239,6 +239,11 @@ def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, A
                 "annualized_train_volatility": pstdev(returns) * request.periods_per_year ** .5 if len(returns) > 1 else None,
                 "oos_metrics": window.metrics.model_dump(mode="json"),
                 "train_metrics": window.train_metrics.model_dump(mode="json") if window.train_metrics else None,
+                "execution_diagnostics": {
+                    "warnings": list(getattr(window, "warnings", ()) or ()),
+                    "train_execution_costs": dict(getattr(window, "train_execution_costs", {}) or {}),
+                    "oos_execution_costs": dict(getattr(window, "oos_execution_costs", {}) or {}),
+                },
             })
         rows.append({
             "strategy_id": item.strategy_id,

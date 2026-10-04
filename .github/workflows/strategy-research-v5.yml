@@ -2,6 +2,12 @@ name: Strategy Research v5
 
 on:
   workflow_dispatch:
+    inputs:
+      research_symbols:
+        description: 'Optional comma-separated research symbols; blank keeps Scanner Top-10'
+        required: false
+        default: ''
+        type: string
   pull_request:
     paths:
       - 'app/pre_holdout_research.py'
@@ -82,6 +88,8 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Load current Scanner US 10-symbol universe
+        env:
+          TARGET_RESEARCH_SYMBOLS: ${{ github.event_name == 'workflow_dispatch' && inputs.research_symbols || '' }}
         run: |
           mkdir -p reports
           python - <<'PY'
@@ -101,7 +109,7 @@ jobs:
                   re.findall(r'"([A-Z][A-Z0-9.-]{0,19})"', match.group(1))
               )
           )
-          if len(symbols) != 10:
+          if not requested and len(symbols) != 10:
               raise SystemExit(f'Expected exactly 10 Scanner US symbols, got {symbols}')
           evidence = {
               'scanner_commit': subprocess.check_output(
@@ -144,7 +152,7 @@ jobs:
               'validation_profile_v4': data.get('validation_profile') == 'nested_walk_forward_v4',
               'profile_v5': (data.get('research_profile') or {}).get('profile_id') == 'strategy_research_v5',
               'candidate_count_8': (data.get('research_profile') or {}).get('candidate_count') == 8,
-              'scanner_symbols_exact': data.get('symbols') == scanner.get('symbols') and len(items) == 10,
+              'research_symbols_exact': data.get('symbols') == scanner.get('symbols') and len(items) == len(scanner.get('symbols') or []),
               'holdout_reserved': data.get('holdout_reserved') is True,
               'holdout_never_opened': data.get('holdout_opened_count') == 0,
               'database_disabled': data.get('database_publish_allowed') is False,

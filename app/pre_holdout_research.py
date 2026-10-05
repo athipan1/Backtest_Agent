@@ -292,6 +292,64 @@ def _window_cost_attribution(candidate: Any, request: Any, window: Any) -> dict[
     }
 
 
+def _training_regime_transition_diagnostics(train: list[Any], periods_per_year: int) -> dict[str, Any]:
+    """Describe regime change visible before the OOS boundary only."""
+    closes = [float(bar.close) for bar in train]
+    if len(closes) < 6:
+        return {
+            "schema_version": "research-regime-transition.v1",
+            "status": "insufficient_training_bars",
+            "training_bar_count": len(closes),
+            "source": "training_prices_only",
+            "diagnostic_only": True,
+            "used_for_selection": False,
+        }
+
+    split = len(closes) // 2
+    prior = closes[: split + 1]
+    recent = closes[split:]
+    prior_returns = [b / a - 1 for a, b in zip(prior, prior[1:])]
+    recent_returns = [b / a - 1 for a, b in zip(recent, recent[1:])]
+    full_returns = [b / a - 1 for a, b in zip(closes, closes[1:])]
+
+    def segment_return(values: list[float]) -> float:
+        return values[-1] / values[0] - 1
+
+    def annualized_volatility(values: list[float]) -> float | None:
+        return pstdev(values) * periods_per_year ** 0.5 if len(values) > 1 else None
+
+    peak = closes[0]
+    max_drawdown = 0.0
+    for close in closes:
+        peak = max(peak, close)
+        max_drawdown = min(max_drawdown, close / peak - 1)
+
+    prior_return = segment_return(prior)
+    recent_return = segment_return(recent)
+    prior_vol = annualized_volatility(prior_returns)
+    recent_vol = annualized_volatility(recent_returns)
+    return {
+        "schema_version": "research-regime-transition.v1",
+        "status": "observed",
+        "training_bar_count": len(closes),
+        "source": "training_prices_only",
+        "full_training_return": segment_return(closes),
+        "prior_half_return": prior_return,
+        "recent_half_return": recent_return,
+        "momentum_acceleration": recent_return - prior_return,
+        "annualized_full_volatility": annualized_volatility(full_returns),
+        "annualized_prior_half_volatility": prior_vol,
+        "annualized_recent_half_volatility": recent_vol,
+        "recent_to_prior_volatility_ratio": (
+            recent_vol / prior_vol if recent_vol is not None and prior_vol not in (None, 0) else None
+        ),
+        "training_max_drawdown": max_drawdown,
+        "diagnostic_only": True,
+        "used_for_selection": False,
+        "promotion_allowed": False,
+    }
+
+
 def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, Any]]:
     """Audit every candidate-OOS pass, including candidates rejected by nested OOS.
 
@@ -317,6 +375,7 @@ def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, A
                 "regime_source": "training_prices_only",
                 "train_return": train[-1].close / train[0].close - 1 if train else None,
                 "annualized_train_volatility": pstdev(returns) * request.periods_per_year ** .5 if len(returns) > 1 else None,
+                "regime_transition": _training_regime_transition_diagnostics(train, request.periods_per_year),
                 "oos_metrics": window.metrics.model_dump(mode="json"),
                 "train_metrics": window.train_metrics.model_dump(mode="json") if window.train_metrics else None,
                 "execution_diagnostics": {

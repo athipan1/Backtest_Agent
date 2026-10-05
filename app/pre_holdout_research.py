@@ -212,6 +212,86 @@ def _trial_snapshot(
         return None
 
 
+
+def _window_cost_attribution(candidate: Any, request: Any, window: Any) -> dict[str, Any]:
+    """Re-run the exact candidate OOS slice under fixed cost scenarios.
+
+    Diagnostic only. Results never feed ranking, nested selection, promotion,
+    holdout evaluation, or execution.
+    """
+    symbol = request.symbols[0].upper()
+    test_start = datetime.fromisoformat(window.test_start)
+    test_end = datetime.fromisoformat(window.test_end)
+    test_bars = [
+        bar for bar in request.bars[request.symbols[0]]
+        if test_start <= bar.timestamp <= test_end
+    ]
+    if not test_bars:
+        raise RuntimeError(
+            f"cost attribution window {window.window} has no matching OOS bars"
+        )
+
+    base_request = promotion.build_run_request(candidate, request).model_copy(
+        deep=True,
+        update={"bars": {symbol: test_bars}, "force_close_at_end": True},
+    )
+    scenarios = []
+    for multiplier in _cost_stress_multipliers():
+        scenario_request = base_request.model_copy(
+            deep=True,
+            update={
+                "fee_bps": base_request.fee_bps * multiplier,
+                "slippage_bps": base_request.slippage_bps * multiplier,
+                "market_impact_bps": base_request.market_impact_bps * multiplier,
+            },
+        )
+        result = promotion.run_backtest_with_risk(scenario_request)
+        metrics = result.metrics
+        scenarios.append({
+            "multiplier": multiplier,
+            "fee_bps": scenario_request.fee_bps,
+            "slippage_bps": scenario_request.slippage_bps,
+            "market_impact_bps": scenario_request.market_impact_bps,
+            "return_pct": metrics.return_pct,
+            "sharpe_ratio": metrics.sharpe_ratio,
+            "max_drawdown": metrics.max_drawdown,
+            "profit_factor": metrics.profit_factor,
+            "trade_count": metrics.trade_count,
+            "execution_costs": execution_costs(result, scenario_request),
+        })
+
+    baseline = next(
+        (scenario for scenario in scenarios if scenario["multiplier"] == 1.0),
+        scenarios[0],
+    )
+    for scenario in scenarios:
+        scenario["delta_return_pct_vs_baseline"] = (
+            scenario["return_pct"] - baseline["return_pct"]
+        )
+        scenario["delta_sharpe_vs_baseline"] = (
+            scenario["sharpe_ratio"] - baseline["sharpe_ratio"]
+            if scenario["sharpe_ratio"] is not None
+            and baseline["sharpe_ratio"] is not None
+            else None
+        )
+        scenario["delta_max_drawdown_vs_baseline"] = (
+            scenario["max_drawdown"] - baseline["max_drawdown"]
+        )
+
+    return {
+        "schema_version": "research-window-cost-attribution.v1",
+        "window": window.window,
+        "test_start": window.test_start,
+        "test_end": window.test_end,
+        "test_bar_count": len(test_bars),
+        "baseline_multiplier": baseline["multiplier"],
+        "scenarios": scenarios,
+        "diagnostic_only": True,
+        "used_for_selection": False,
+        "promotion_allowed": False,
+    }
+
+
 def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, Any]]:
     """Audit every candidate-OOS pass, including candidates rejected by nested OOS.
 
@@ -243,6 +323,9 @@ def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, A
                     "warnings": list(getattr(window, "warnings", ()) or ()),
                     "train_execution_costs": dict(getattr(window, "train_execution_costs", {}) or {}),
                     "oos_execution_costs": dict(getattr(window, "oos_execution_costs", {}) or {}),
+                    "cost_attribution": _window_cost_attribution(
+                        candidate, request, window
+                    ),
                 },
             })
         rows.append({

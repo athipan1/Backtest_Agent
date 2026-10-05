@@ -246,6 +246,8 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
             window=1,
             train_start=request.bars["NVDA"][0].timestamp.isoformat(),
             train_end=request.bars["NVDA"][4].timestamp.isoformat(),
+            test_start=request.bars["NVDA"][5].timestamp.isoformat(),
+            test_end=request.bars["NVDA"][9].timestamp.isoformat(),
             metrics=Dumpable({"trade_count": 3, "sharpe_ratio": None, "partial_fills": 2, "liquidity_rejections": 1}),
             train_metrics=None,
             warnings=["force-close remainder constrained by bar volume"],
@@ -276,6 +278,16 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
         return Dumpable({"passed": False})
 
     monkeypatch.setattr("app.pre_holdout_research._run_cost_stress", costs)
+    monkeypatch.setattr(
+        "app.pre_holdout_research._window_cost_attribution",
+        lambda candidate, request, window: {
+            "schema_version": "research-window-cost-attribution.v1",
+            "window": window.window,
+            "diagnostic_only": True,
+            "used_for_selection": False,
+            "promotion_allowed": False,
+        },
+    )
     monkeypatch.setattr(promotion, "run_promotion_robustness", robustness)
     output = run_pre_holdout_research(
         profile_id="strategy_research_v5", report_path=tmp_path / "research.json",
@@ -300,6 +312,13 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
             "warnings": ["force-close remainder constrained by bar volume"],
             "train_execution_costs": {"partial_fills": 1, "liquidity_rejections": 0},
             "oos_execution_costs": {"partial_fills": 2, "liquidity_rejections": 1},
+            "cost_attribution": {
+                "schema_version": "research-window-cost-attribution.v1",
+                "window": 1,
+                "diagnostic_only": True,
+                "used_for_selection": False,
+                "promotion_allowed": False,
+            },
         }
     assert data["items"][0]["status"] == "no_eligible_strategy"
     assert data["holdout_opened_count"] == 0

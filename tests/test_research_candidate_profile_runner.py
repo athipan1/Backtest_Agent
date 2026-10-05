@@ -12,6 +12,7 @@ from app.final_holdout import FinalHoldoutCriteria
 from app.models import PriceBar
 from app.pre_holdout_research import (
     _expected_rejection_stage,
+    _training_regime_transition_diagnostics,
     run_pre_holdout_research,
 )
 from scripts.run_research_candidate_profile import (
@@ -308,6 +309,8 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
         assert fold["train_return"] == pytest.approx(105 / 101 - 1)
         assert fold["oos_metrics"]["sharpe_ratio"] is None
         assert fold["train_metrics"] is None
+        assert fold["regime_transition"]["source"] == "training_prices_only"
+        assert fold["regime_transition"]["used_for_selection"] is False
         assert fold["execution_diagnostics"] == {
             "warnings": ["force-close remainder constrained by bar volume"],
             "train_execution_costs": {"partial_fills": 1, "liquidity_rejections": 0},
@@ -323,6 +326,23 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
     assert data["items"][0]["status"] == "no_eligible_strategy"
     assert data["holdout_opened_count"] == 0
     assert data["promotion_allowed"] is data["execution_allowed"] is False
+
+
+
+def test_regime_transition_diagnostics_are_training_only_and_diagnostic():
+    bars = _bars(10)
+    evidence = _training_regime_transition_diagnostics(bars, 252)
+
+    assert evidence["schema_version"] == "research-regime-transition.v1"
+    assert evidence["source"] == "training_prices_only"
+    assert evidence["training_bar_count"] == 10
+    assert evidence["recent_half_return"] > 0
+    assert evidence["prior_half_return"] > 0
+    assert evidence["annualized_recent_half_volatility"] is not None
+    assert evidence["training_max_drawdown"] == 0.0
+    assert evidence["diagnostic_only"] is True
+    assert evidence["used_for_selection"] is False
+    assert evidence["promotion_allowed"] is False
 
 
 def test_expected_pre_holdout_rejection_is_safe_and_holdout_stays_sealed(

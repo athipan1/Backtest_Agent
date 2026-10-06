@@ -210,6 +210,19 @@ def strategy_research_v6_candidates() -> list[MultiStrategyCandidate]:
     ]
 
 
+def strategy_research_v7_candidates() -> list[MultiStrategyCandidate]:
+    """Return the preregistered sparse v7 hypothesis suite."""
+
+    controls = strategy_research_v5_candidates()[:4]
+    return [
+        *controls,
+        MultiStrategyCandidate(strategy_id="sma-crossover-15-45-risk-v7", name="SMA crossover v7 15/45 medium trend", strategy="sma_crossover", fast_window=15, slow_window=45, max_position_pct=0.05, stop_loss_pct=0.035, reward_risk_ratio=2.5),
+        MultiStrategyCandidate(strategy_id="sma-crossover-20-60-risk-v7", name="SMA crossover v7 20/60 slow trend", strategy="sma_crossover", fast_window=20, slow_window=60, max_position_pct=0.05, stop_loss_pct=0.04, reward_risk_ratio=2.8),
+        MultiStrategyCandidate(strategy_id="mean-reversion-5-30-risk-v7", name="Mean reversion v7 5/30 medium cycle", strategy="mean_reversion", fast_window=5, slow_window=30, max_position_pct=0.04, stop_loss_pct=0.025, reward_risk_ratio=2.0),
+        MultiStrategyCandidate(strategy_id="mean-reversion-8-35-risk-v7", name="Mean reversion v7 8/35 slower cycle", strategy="mean_reversion", fast_window=8, slow_window=35, max_position_pct=0.04, stop_loss_pct=0.03, reward_risk_ratio=2.2),
+    ]
+
+
 def research_profile(profile_id: str) -> list[MultiStrategyCandidate]:
     normalized = profile_id.strip().lower()
     if normalized == BULL_RESEARCH_PROFILE_ID:
@@ -218,4 +231,6 @@ def research_profile(profile_id: str) -> list[MultiStrategyCandidate]:
         return strategy_research_v5_candidates()
     if normalized == STRATEGY_RESEARCH_V6_PROFILE_ID:
         return strategy_research_v6_candidates()
+    if normalized == STRATEGY_RESEARCH_V7_PROFILE_ID:
+        return strategy_research_v7_candidates()
     raise ValueError(f"Unknown research candidate profile: {profile_id}")

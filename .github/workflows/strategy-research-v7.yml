@@ -124,6 +124,8 @@ jobs:
             'promotion_disabled': data.get('promotion_allowed') is False,
             'execution_disabled': data.get('execution_allowed') is False,
             'no_operational_failures': data.get('failed_symbols') == [],
+            'parameter_stability_present': all((item.get('parameter_stability') or {}).get('schema_version') == 'parameter-stability-diagnostic.v1' for item in (data.get('items') or []) if item.get('status') != 'failed'),
+            'parameter_stability_diagnostic_only': all((item.get('parameter_stability') or {}).get('diagnostic_only') is True and (item.get('parameter_stability') or {}).get('used_for_selection') is False and (item.get('parameter_stability') or {}).get('promotion_allowed') is False and (item.get('parameter_stability') or {}).get('execution_allowed') is False and (item.get('parameter_stability') or {}).get('sealed_holdout_opened') is False for item in (data.get('items') or []) if item.get('status') != 'failed'),
           }
           failures.extend(k for k,v in checks.items() if not v)
           evidence={'checks':checks,'pre_holdout_candidate_symbols':data.get('pre_holdout_candidate_symbols') or [],'failed_symbols':data.get('failed_symbols') or [],'holdout_opened_count':data.get('holdout_opened_count')}

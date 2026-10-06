@@ -14,6 +14,7 @@ from app.nested_validation_v4 import (
 )
 from app.research_candidate_profiles import (
     STRATEGY_RESEARCH_V6_PROFILE_ID,
+    STRATEGY_RESEARCH_V7_PROFILE_ID,
     research_profile,
 )
 from app.research_overfit import PBOCriteria, run_cscv_pbo
@@ -486,7 +487,10 @@ def run_pre_holdout_research(
 
     candidates = research_profile(profile_id)
     profile = _profile_metadata(profile_id, candidates)
-    pbo_required = profile_id == STRATEGY_RESEARCH_V6_PROFILE_ID
+    pbo_required = profile_id in {
+        STRATEGY_RESEARCH_V6_PROFILE_ID,
+        STRATEGY_RESEARCH_V7_PROFILE_ID,
+    }
     symbols = promotion._symbols_from_env()
     timeframe = os.getenv("BACKTEST_TIMEFRAME", "1d")
     default_start, default_end = promotion._default_date_range()

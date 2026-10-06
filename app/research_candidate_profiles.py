@@ -7,7 +7,8 @@ from app.multi_strategy import MultiStrategyCandidate
 
 BULL_RESEARCH_PROFILE_ID: Final[str] = "bull_research_v1"
 STRATEGY_RESEARCH_V5_PROFILE_ID: Final[str] = "strategy_research_v5"
-STRATEGY_RESEARCH_V6_PROFILE_ID: Final[str] = "strategy_research_v6"\nSTRATEGY_RESEARCH_V7_PROFILE_ID: Final[str] = "strategy_research_v7"
+STRATEGY_RESEARCH_V6_PROFILE_ID: Final[str] = "strategy_research_v6"
+STRATEGY_RESEARCH_V7_PROFILE_ID: Final[str] = "strategy_research_v7"
 
 
 def bull_research_v1_candidates() -> list[MultiStrategyCandidate]:

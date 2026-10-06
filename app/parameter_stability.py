@@ -36,7 +36,9 @@ def parameter_stability_diagnostics(
         candidate = candidate_by_id.get(strategy_id)
         if candidate is None:
             continue
-        metrics = result.metrics
+        metrics = getattr(result, "metrics", None)
+        if metrics is None:
+            continue
         families[str(candidate.strategy)].append(
             {
                 "strategy_id": strategy_id,

@@ -560,7 +560,10 @@ def run_pre_holdout_research(
                 candidates=request.candidates,
                 ranked_results=getattr(selection, "ranked_results", []),
             )
-            phase6_nested_oos_attribution = phase6_nested_oos_failure_attribution(\n                selection=selection, parameter_stability=parameter_stability\n            )\n            sealed_holdout = {
+            phase6_nested_oos_attribution = phase6_nested_oos_failure_attribution(
+                selection=selection, parameter_stability=parameter_stability
+            )
+            sealed_holdout = {
                 "enabled": True,
                 "status": "sealed_not_opened",
                 "bar_count": len(sealed_holdout_bars),
@@ -583,7 +586,8 @@ def run_pre_holdout_research(
                         ),
                         "cost_stress_evidence": None,
                         "selection": selection.model_dump(mode="json"),
-                        "parameter_stability": parameter_stability,\n                        "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
+                        "parameter_stability": parameter_stability,
+                        "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
                         "statistical_evidence": None,
                         "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=None, selected_strategy_id=None),
                         "robustness_evidence": None,
@@ -625,7 +629,8 @@ def run_pre_holdout_research(
                         "pbo_evidence": pbo_evidence.model_dump(mode="json"),
                         "cost_stress_evidence": None,
                         "selection": selection.model_dump(mode="json"),
-                        "parameter_stability": parameter_stability,\n                        "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
+                        "parameter_stability": parameter_stability,
+                        "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
                         "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                         "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=statistical_evidence.model_dump(mode="json"), selected_strategy_id=selected_strategy_id),
                         "robustness_evidence": robustness_evidence.model_dump(mode="json"),
@@ -717,7 +722,8 @@ def run_pre_holdout_research(
                     "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
                     "cost_stress_evidence": cost_stress_evidence,
                     "selection": selection.model_dump(mode="json"),
-                    "parameter_stability": parameter_stability,\n                        "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
+                    "parameter_stability": parameter_stability,
+                        "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
                     "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                     "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=statistical_evidence.model_dump(mode="json"), selected_strategy_id=selected_strategy_id),
                     "robustness_evidence": robustness_evidence.model_dump(mode="json"),

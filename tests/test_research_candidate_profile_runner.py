@@ -13,6 +13,7 @@ from app.models import PriceBar
 from app.pre_holdout_research import (
     _expected_rejection_stage,
     _training_regime_transition_diagnostics,
+    _cross_symbol_regime_validation,
     run_pre_holdout_research,
 )
 from scripts.run_research_candidate_profile import (
@@ -327,6 +328,51 @@ def test_every_candidate_oos_pass_is_diagnosed_without_opening_holdout(
     assert data["holdout_opened_count"] == 0
     assert data["promotion_allowed"] is data["execution_allowed"] is False
 
+
+
+
+def test_cross_symbol_regime_validation_is_observational_only():
+    diagnostics = {
+        "AAA": [{
+            "strategy_id": "s1",
+            "fold_regime_descriptors": [{
+                "window": 1,
+                "oos_metrics": {"return_pct": 0.02, "sharpe_ratio": 1.1},
+                "regime_transition": {
+                    "momentum_acceleration": 0.1,
+                    "recent_to_prior_volatility_ratio": 0.8,
+                    "training_max_drawdown": -0.05,
+                    "recent_half_return": 0.12,
+                    "prior_half_return": 0.02,
+                },
+            }],
+        }],
+        "BBB": [{
+            "strategy_id": "s2",
+            "fold_regime_descriptors": [{
+                "window": 2,
+                "oos_metrics": {"return_pct": -0.01, "sharpe_ratio": -0.5},
+                "regime_transition": {
+                    "momentum_acceleration": -0.2,
+                    "recent_to_prior_volatility_ratio": 1.4,
+                    "training_max_drawdown": -0.15,
+                    "recent_half_return": -0.1,
+                    "prior_half_return": 0.1,
+                },
+            }],
+        }],
+    }
+    evidence = _cross_symbol_regime_validation(diagnostics)
+    assert evidence["window_count"] == 2
+    assert evidence["symbol_count"] == 2
+    assert evidence["strategy_count"] == 2
+    assert evidence["outcomes"]["profitable"]["window_count"] == 1
+    assert evidence["outcomes"]["losing"]["window_count"] == 1
+    assert evidence["thresholds_derived"] is False
+    assert evidence["diagnostic_only"] is True
+    assert evidence["used_for_selection"] is False
+    assert evidence["promotion_allowed"] is False
+    assert evidence["execution_allowed"] is False
 
 
 def test_regime_transition_diagnostics_are_training_only_and_diagnostic():

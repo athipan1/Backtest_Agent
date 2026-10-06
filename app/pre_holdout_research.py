@@ -402,6 +402,64 @@ def _candidate_oos_diagnostics(selection: Any, request: Any) -> list[dict[str, A
     return rows
 
 
+def _cross_symbol_regime_validation(candidate_oos_diagnostics: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate existing OOS regime evidence without deriving a trading rule."""
+    metrics = (
+        "momentum_acceleration",
+        "recent_to_prior_volatility_ratio",
+        "training_max_drawdown",
+        "recent_half_return",
+        "prior_half_return",
+    )
+    groups: dict[str, list[dict[str, Any]]] = {"profitable": [], "losing": [], "flat": []}
+    for symbol, candidates in candidate_oos_diagnostics.items():
+        for candidate in candidates or []:
+            strategy_id = candidate.get("strategy_id")
+            for fold in candidate.get("fold_regime_descriptors") or []:
+                oos = fold.get("oos_metrics") or {}
+                regime = fold.get("regime_transition") or {}
+                return_pct = oos.get("return_pct")
+                if return_pct is None:
+                    continue
+                outcome = "profitable" if return_pct > 0 else "losing" if return_pct < 0 else "flat"
+                groups[outcome].append({
+                    "symbol": symbol,
+                    "strategy_id": strategy_id,
+                    "window": fold.get("window"),
+                    "oos_return_pct": return_pct,
+                    "oos_sharpe_ratio": oos.get("sharpe_ratio"),
+                    **{metric: regime.get(metric) for metric in metrics},
+                })
+
+    summaries = {}
+    for outcome, rows in groups.items():
+        metric_summary = {}
+        for metric in metrics:
+            values = [float(row[metric]) for row in rows if row.get(metric) is not None]
+            metric_summary[metric] = {
+                "count": len(values),
+                "mean": sum(values) / len(values) if values else None,
+                "min": min(values) if values else None,
+                "max": max(values) if values else None,
+            }
+        summaries[outcome] = {"window_count": len(rows), "metrics": metric_summary}
+
+    all_rows = groups["profitable"] + groups["losing"] + groups["flat"]
+    return {
+        "schema_version": "research-cross-symbol-regime-validation.v1",
+        "window_count": len(all_rows),
+        "symbol_count": len({row["symbol"] for row in all_rows}),
+        "strategy_count": len({row["strategy_id"] for row in all_rows}),
+        "outcomes": summaries,
+        "rows": all_rows,
+        "diagnostic_only": True,
+        "thresholds_derived": False,
+        "used_for_selection": False,
+        "promotion_allowed": False,
+        "execution_allowed": False,
+    }
+
+
 def run_pre_holdout_research(
     *,
     profile_id: str,
@@ -690,6 +748,7 @@ def run_pre_holdout_research(
             "symbols": symbols,
             "items": items,
             "candidate_oos_diagnostics": candidate_oos_diagnostics,
+            "cross_symbol_regime_validation": _cross_symbol_regime_validation(candidate_oos_diagnostics),
             "pre_holdout_candidate_symbols": pre_holdout_candidates,
             "ineligible_symbols": ineligible,
             "failed_symbols": failed,

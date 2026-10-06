@@ -14,6 +14,7 @@ from app.nested_validation_v4 import (
 )
 from app.research_candidate_profiles import (
     STRATEGY_RESEARCH_V6_PROFILE_ID,
+    STRATEGY_RESEARCH_V7_PROFILE_ID,
     research_profile,
 )
 from app.research_overfit import PBOCriteria, run_cscv_pbo

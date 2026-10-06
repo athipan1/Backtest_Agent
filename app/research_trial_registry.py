@@ -36,6 +36,26 @@ _PROFILE_UNIQUE_TRIALS: Final[dict[str, tuple[str, ...]]] = {
         "mean-reversion-3-15-risk-v6",
         "mean-reversion-10-40-risk-v6",
     ),
+    "strategy_research_v7": (
+        "sma-crossover-balanced-v1",
+        "trend-following-balanced-v1",
+        "mean-reversion-balanced-v1",
+        "breakout-balanced-v1",
+        "trend-following-10-50-risk-v5",
+        "trend-following-20-100-risk-v5",
+        "breakout-10-40-risk-v5",
+        "breakout-20-55-risk-v5",
+        "trend-following-30-120-risk-v6",
+        "trend-following-50-150-risk-v6",
+        "breakout-20-80-risk-v6",
+        "breakout-30-120-risk-v6",
+        "mean-reversion-3-15-risk-v6",
+        "mean-reversion-10-40-risk-v6",
+        "sma-crossover-15-45-risk-v7",
+        "sma-crossover-20-60-risk-v7",
+        "mean-reversion-5-30-risk-v7",
+        "mean-reversion-8-35-risk-v7",
+    ),
 }
 
 _FIRST_SEEN_PROFILE: Final[dict[str, str]] = {
@@ -52,7 +72,11 @@ _FIRST_SEEN_PROFILE: Final[dict[str, str]] = {
     "breakout-20-80-risk-v6": "strategy_research_v6",
     "breakout-30-120-risk-v6": "strategy_research_v6",
     "mean-reversion-3-15-risk-v6": "strategy_research_v6",
-    "mean-reversion-10-40-risk-v6": "strategy_research_v6",\n    "sma-crossover-15-45-risk-v7": "strategy_research_v7",\n    "sma-crossover-20-60-risk-v7": "strategy_research_v7",\n    "mean-reversion-5-30-risk-v7": "strategy_research_v7",\n    "mean-reversion-8-35-risk-v7": "strategy_research_v7",
+    "mean-reversion-10-40-risk-v6": "strategy_research_v6",
+    "sma-crossover-15-45-risk-v7": "strategy_research_v7",
+    "sma-crossover-20-60-risk-v7": "strategy_research_v7",
+    "mean-reversion-5-30-risk-v7": "strategy_research_v7",
+    "mean-reversion-8-35-risk-v7": "strategy_research_v7",
 }
 
 

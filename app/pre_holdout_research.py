@@ -25,6 +25,7 @@ from app.research_trial_registry import (
 from app.statistical_validation import equity_returns
 from app.fold_evidence import execution_costs
 from app.execution_policy import execution_policy_metadata
+from app.parameter_stability import parameter_stability_diagnostics
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -553,6 +554,10 @@ def run_pre_holdout_research(
                 )
             selection = run_walk_forward_multi_strategy_backtest_v4(request)
             candidate_oos_diagnostics[symbol] = _candidate_oos_diagnostics(selection, request)
+            parameter_stability = parameter_stability_diagnostics(
+                candidates=request.candidates,
+                ranked_results=selection.ranked_results,
+            )
             sealed_holdout = {
                 "enabled": True,
                 "status": "sealed_not_opened",
@@ -576,6 +581,7 @@ def run_pre_holdout_research(
                         ),
                         "cost_stress_evidence": None,
                         "selection": selection.model_dump(mode="json"),
+                        "parameter_stability": parameter_stability,
                         "statistical_evidence": None,
                         "robustness_evidence": None,
                         "pre_holdout_metadata": None,
@@ -616,6 +622,7 @@ def run_pre_holdout_research(
                         "pbo_evidence": pbo_evidence.model_dump(mode="json"),
                         "cost_stress_evidence": None,
                         "selection": selection.model_dump(mode="json"),
+                        "parameter_stability": parameter_stability,
                         "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                         "robustness_evidence": robustness_evidence.model_dump(mode="json"),
                         "pre_holdout_metadata": None,
@@ -706,6 +713,7 @@ def run_pre_holdout_research(
                     "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
                     "cost_stress_evidence": cost_stress_evidence,
                     "selection": selection.model_dump(mode="json"),
+                    "parameter_stability": parameter_stability,
                     "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                     "robustness_evidence": robustness_evidence.model_dump(mode="json"),
                     "pre_holdout_metadata": pre_holdout_metadata,

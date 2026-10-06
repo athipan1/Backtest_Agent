@@ -556,7 +556,7 @@ def run_pre_holdout_research(
             candidate_oos_diagnostics[symbol] = _candidate_oos_diagnostics(selection, request)
             parameter_stability = parameter_stability_diagnostics(
                 candidates=request.candidates,
-                ranked_results=selection.ranked_results,
+                ranked_results=getattr(selection, "ranked_results", []),
             )
             sealed_holdout = {
                 "enabled": True,

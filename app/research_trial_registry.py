@@ -52,7 +52,7 @@ _FIRST_SEEN_PROFILE: Final[dict[str, str]] = {
     "breakout-20-80-risk-v6": "strategy_research_v6",
     "breakout-30-120-risk-v6": "strategy_research_v6",
     "mean-reversion-3-15-risk-v6": "strategy_research_v6",
-    "mean-reversion-10-40-risk-v6": "strategy_research_v6",
+    "mean-reversion-10-40-risk-v6": "strategy_research_v6",\n    "sma-crossover-15-45-risk-v7": "strategy_research_v7",\n    "sma-crossover-20-60-risk-v7": "strategy_research_v7",\n    "mean-reversion-5-30-risk-v7": "strategy_research_v7",\n    "mean-reversion-8-35-risk-v7": "strategy_research_v7",
 }
 
 

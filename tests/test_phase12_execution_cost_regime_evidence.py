@@ -205,11 +205,18 @@ def test_engine_records_reference_for_buy_exit_and_half_spread_without_price_cha
     from app.execution_policy import ExecutionRealismPolicy, execution_policy_context
     from app.models import PriceBar, BacktestRunRequest
 
-    values = [100, 101, 103, 110]
+    # Preserve the already-proven breakout signal on the third bar.
+    prices = [
+        (100, 100, 99, 100),
+        (101, 102, 100, 101),
+        (102, 104, 101, 103),
+        (120, 122, 119, 121),
+    ]
     bars = [PriceBar(
         timestamp=datetime(2026, 1, 1) + timedelta(days=i),
-        open=float(p), high=p + 2, low=p - 1, close=float(p), volume=10000,
-    ) for i, p in enumerate(values)]
+        open=float(op), high=float(high), low=float(low),
+        close=float(close), volume=10000,
+    ) for i, (op, high, low, close) in enumerate(prices)]
     request = BacktestRunRequest(
         symbols=["AAPL"], bars={"AAPL": bars}, strategy="breakout",
         initial_equity=10000, fast_window=1, slow_window=2,

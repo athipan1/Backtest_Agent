@@ -216,6 +216,10 @@ class SimulatedTrade(BaseModel):
     market_impact_bps: float = 0.0
     position_closed: bool = False
     round_trip_realized_pnl: Optional[float] = None
+    # Research provenance only. These fields never affect execution prices.
+    execution_reference_price: Optional[float] = None
+    modeled_slippage_bps: Optional[float] = None
+    modeled_half_spread_bps: Optional[float] = None
 
 
 class EquityPoint(BaseModel):

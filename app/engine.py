@@ -12,6 +12,7 @@ from app.execution import (
     sell_execution_price,
     volume_capacity,
 )
+from app.execution_policy import current_execution_policy
 from app.models import (
     AllocationRejection,
     BacktestMetrics,
@@ -130,6 +131,8 @@ def _exit_position(
     requested_quantity: float | None = None,
     bar_volume: float = 0.0,
     market_impact_bps: float = 0.0,
+    reference_price: float | None = None,
+    modeled_slippage_bps: float | None = None,
 ) -> tuple[float, float, bool]:
     quantity_before = position.quantity
     fill_quantity = min(quantity_before, quantity or quantity_before)
@@ -173,6 +176,12 @@ def _exit_position(
                 6,
             ),
             market_impact_bps=round(market_impact_bps, 6),
+            execution_reference_price=reference_price,
+            modeled_slippage_bps=modeled_slippage_bps,
+            modeled_half_spread_bps=(
+                current_execution_policy().bid_ask_spread_bps / 2.0
+                if reference_price is not None else None
+            ),
             position_closed=position_closed,
             round_trip_realized_pnl=round_trip_realized_pnl,
         )
@@ -463,6 +472,8 @@ def _run_backtest(
                 requested_quantity=requested_quantity,
                 bar_volume=bar.volume,
                 market_impact_bps=impact_bps,
+                reference_price=exit_reference,
+                modeled_slippage_bps=request.slippage_bps,
             )
             remaining_liquidity[symbol] -= int(filled)
             last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
@@ -524,6 +535,8 @@ def _run_backtest(
                 requested_quantity=requested_quantity,
                 bar_volume=bar.volume,
                 market_impact_bps=impact_bps,
+                reference_price=bar.open,
+                modeled_slippage_bps=request.slippage_bps,
             )
             remaining_liquidity[symbol] -= int(filled)
             last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
@@ -733,6 +746,11 @@ def _run_backtest(
                         ),
                         6,
                     ),
+                    execution_reference_price=reference_price,
+                    modeled_slippage_bps=request.slippage_bps,
+                    modeled_half_spread_bps=(
+                        current_execution_policy().bid_ask_spread_bps / 2.0
+                    ),
                 )
             )
 
@@ -790,6 +808,8 @@ def _run_backtest(
                 requested_quantity=requested_quantity,
                 bar_volume=bar.volume,
                 market_impact_bps=impact_bps,
+                reference_price=exit_price,
+                modeled_slippage_bps=request.slippage_bps,
             )
             remaining_liquidity[symbol] -= int(filled)
             last_remaining_liquidity[symbol] = remaining_liquidity[symbol]
@@ -869,6 +889,8 @@ def _run_backtest(
                 requested_quantity=requested_quantity,
                 bar_volume=last_bar.volume,
                 market_impact_bps=impact_bps,
+                reference_price=last_bar.close,
+                modeled_slippage_bps=request.slippage_bps,
             )
             last_remaining_liquidity[symbol] -= int(filled)
             if not closed:

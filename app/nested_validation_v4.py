@@ -180,6 +180,14 @@ def run_nested_walk_forward_stability_v4(
                 validation_period=validation_period,
                 train_execution_costs=getattr(selected_item, "execution_costs", {}),
                 oos_execution_costs=execution_costs(test_result, test_request),
+                oos_fill_evidence={
+                    "source": "BacktestRunResult.trades",
+                    "recorded": getattr(test_result, "trades", None) is not None,
+                    "fills": [
+                        fill.model_dump(mode="json")
+                        for fill in (getattr(test_result, "trades", None) or [])
+                    ],
+                },
                 capital_deployed=True,
                 profitable=profitable,
                 metrics=test_result.metrics,

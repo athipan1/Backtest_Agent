@@ -77,6 +77,7 @@ class WalkForwardWindowResult(BaseModel):
     training_candidates: List[Dict[str, Any]] = Field(default_factory=list)
     train_execution_costs: Dict[str, Any] = Field(default_factory=dict)
     oos_execution_costs: Dict[str, Any] = Field(default_factory=dict)
+    oos_fill_evidence: Dict[str, Any] = Field(default_factory=dict)
     validation_period: Dict[str, Any] = Field(default_factory=dict)
 
 

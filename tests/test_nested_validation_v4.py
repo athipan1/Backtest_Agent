@@ -200,6 +200,12 @@ def test_v4_safe_candidate_reaches_outer_oos_even_when_train_promotion_stats_fai
     result = v4.run_nested_walk_forward_stability_v4(request)
 
     assert len(execution_calls) == 4
+    assert all(
+        window.oos_fill_evidence["source"] == "BacktestRunResult.trades"
+        and window.oos_fill_evidence["recorded"] is True
+        and window.oos_fill_evidence["fills"] == []
+        for window in result.windows
+    )
     assert result.trade_windows == 4
     assert result.no_trade_windows == 0
     assert result.train_eligible_window_rate == 1.0

@@ -28,6 +28,7 @@ from app.execution_policy import execution_policy_metadata
 from app.parameter_stability import parameter_stability_diagnostics
 from app.phase5_statistical_attribution import phase5_statistical_failure_attribution
 from app.phase6_nested_oos_attribution import phase6_nested_oos_failure_attribution
+from app.phase7_fold_root_causes import phase7_fold_root_causes
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -563,6 +564,9 @@ def run_pre_holdout_research(
             phase6_nested_oos_attribution = phase6_nested_oos_failure_attribution(
                 selection=selection, parameter_stability=parameter_stability
             )
+            phase7_fold_root_causes_evidence = phase7_fold_root_causes(
+                phase6_nested_oos_attribution
+            )
             sealed_holdout = {
                 "enabled": True,
                 "status": "sealed_not_opened",
@@ -588,6 +592,7 @@ def run_pre_holdout_research(
                         "selection": selection.model_dump(mode="json"),
                         "parameter_stability": parameter_stability,
                         "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
+                        "phase7_fold_root_causes": phase7_fold_root_causes_evidence,
                         "statistical_evidence": None,
                         "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=None, selected_strategy_id=None),
                         "robustness_evidence": None,
@@ -631,6 +636,7 @@ def run_pre_holdout_research(
                         "selection": selection.model_dump(mode="json"),
                         "parameter_stability": parameter_stability,
                         "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
+                        "phase7_fold_root_causes": phase7_fold_root_causes_evidence,
                         "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                         "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=statistical_evidence.model_dump(mode="json"), selected_strategy_id=selected_strategy_id),
                         "robustness_evidence": robustness_evidence.model_dump(mode="json"),
@@ -724,6 +730,7 @@ def run_pre_holdout_research(
                     "selection": selection.model_dump(mode="json"),
                     "parameter_stability": parameter_stability,
                         "phase6_nested_oos_attribution": phase6_nested_oos_attribution,
+                        "phase7_fold_root_causes": phase7_fold_root_causes_evidence,
                     "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                     "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=statistical_evidence.model_dump(mode="json"), selected_strategy_id=selected_strategy_id),
                     "robustness_evidence": robustness_evidence.model_dump(mode="json"),

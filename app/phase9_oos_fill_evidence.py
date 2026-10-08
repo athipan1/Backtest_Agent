@@ -60,6 +60,9 @@ def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
 
         if decision == "NO_TRADE":
             abstention_windows += 1
+            abstention_evidence = getattr(window, "oos_fill_evidence", None) or {}
+            if isinstance(abstention_evidence, dict) and abstention_evidence.get("fills"):
+                fold_errors.add("abstention_has_fill_payload")
             if strategy_id is not None:
                 fold_errors.add("abstention_has_selected_strategy")
             fold_rows.append({
@@ -138,7 +141,11 @@ def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
         for name in fold_errors:
             errors[name] += 1
 
-    verified = bool(windows) and trade_windows > 0 and not errors
+    if not windows:
+        errors["nested_oos_evidence_unavailable"] += 1
+    if trade_windows and not records:
+        errors["no_observed_oos_fills"] += 1
+    verified = bool(windows) and trade_windows > 0 and bool(records) and not errors
     return {
         "schema_version": "phase9-oos-fill-evidence.v1",
         "source": "nested_v4_actual_oos_BacktestRunResult.trades",

@@ -105,6 +105,7 @@ def phase10_closed_position_evidence(fill_report: dict[str, Any] | None) -> dict
                     "exit_fill_indices": [], "gross_pnl": 0.0, "fees": 0.0,
                     "net_pnl": 0.0, "engine_net_pnl": 0.0,
                     "closed_quantity": 0.0, "max_open_quantity": 0.0,
+                    "exit_reasons": [],
                 }
                 positions[key] = position
             position["open_qty"] += qty
@@ -140,6 +141,8 @@ def phase10_closed_position_evidence(fill_report: dict[str, Any] | None) -> dict
         position["fees"] += fees
         position["closed_quantity"] += qty
         position["exit_fill_indices"].append(index)
+        if isinstance(fill.get("reason"), str) and fill["reason"]:
+            position["exit_reasons"].append(fill["reason"])
         position["open_qty"] -= qty
         position["open_cost"] -= attributed_cost
         position["open_entry_fees"] -= attributed_fees
@@ -168,6 +171,7 @@ def phase10_closed_position_evidence(fill_report: dict[str, Any] | None) -> dict
             "exit_fill_indices": list(position["exit_fill_indices"]),
             "closed_quantity": position["closed_quantity"],
             "max_open_quantity": position["max_open_quantity"],
+            "reported_exit_reasons": list(position["exit_reasons"]) or None,
             "executed_price_gross_pnl": round(position["gross_pnl"], 2),
             "total_fees": round(position["fees"], 2),
             "fee_adjusted_net_pnl": round(position["net_pnl"], 2),

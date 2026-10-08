@@ -11,6 +11,7 @@ from math import isfinite
 from typing import Any
 
 from app.phase10_closed_position_evidence import phase10_closed_position_evidence
+from app.phase11_trade_level_loss_attribution import phase11_trade_level_loss_attribution
 
 
 def _aware_time(value: Any) -> datetime | None:
@@ -175,5 +176,7 @@ def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
         "execution_allowed": False,
         "sealed_holdout_opened": False,
     }
-    evidence["phase10_closed_position_evidence"] = phase10_closed_position_evidence(evidence)
+    phase10 = phase10_closed_position_evidence(evidence)
+    evidence["phase10_closed_position_evidence"] = phase10
+    evidence["phase11_trade_level_loss_attribution"] = phase11_trade_level_loss_attribution(phase10)
     return evidence

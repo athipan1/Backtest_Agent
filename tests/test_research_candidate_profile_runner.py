@@ -196,6 +196,9 @@ def test_research_runner_keeps_holdout_sealed_for_pre_holdout_candidate(
     item = data["items"][0]
     assert item["status"] == "pre_holdout_candidate"
     assert item["selected_strategy_id"] == "trend-following-10-50-risk-v5"
+    assert item["phase9_oos_fill_evidence"]["closed_trade_ledger_available"] is False
+    assert item["phase9_oos_fill_evidence"]["execution_allowed"] is False
+    assert item["phase9_oos_fill_evidence"]["oos_fill_coverage_verified"] is False
     assert item["sealed_holdout"] == {
         "enabled": True,
         "status": "sealed_not_opened",

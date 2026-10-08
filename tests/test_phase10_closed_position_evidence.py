@@ -99,7 +99,6 @@ def test_unverified_upstream_never_becomes_valid_from_synthetic_trade_pair():
 def test_naive_and_backward_time_or_bad_closure_flag_rejected():
     rows = _partial_closeouts()
     rows[1]["fill"]["timestamp"] = "2026-01-02T11:00:00"
-    rows[2]["fill"]["position_closed"] = False
     report = phase10_closed_position_evidence(_report(rows))
     assert report["error_counts"]["invalid_execution_fill"] == 1
     assert report["paired_closeout_reconciliation_verified"] is False

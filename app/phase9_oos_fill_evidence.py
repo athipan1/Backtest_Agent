@@ -10,6 +10,8 @@ from datetime import datetime
 from math import isfinite
 from typing import Any
 
+from app.phase10_closed_position_evidence import phase10_closed_position_evidence
+
 
 def _aware_time(value: Any) -> datetime | None:
     if not isinstance(value, str):
@@ -146,7 +148,7 @@ def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
     if trade_windows and not records:
         errors["no_observed_oos_fills"] += 1
     verified = bool(windows) and trade_windows > 0 and bool(records) and not errors
-    return {
+    evidence = {
         "schema_version": "phase9-oos-fill-evidence.v1",
         "source": "nested_v4_actual_oos_BacktestRunResult.trades",
         "fold_count": len(fold_rows),
@@ -173,3 +175,5 @@ def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
         "execution_allowed": False,
         "sealed_holdout_opened": False,
     }
+    evidence["phase10_closed_position_evidence"] = phase10_closed_position_evidence(evidence)
+    return evidence

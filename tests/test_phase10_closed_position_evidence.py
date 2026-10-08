@@ -104,3 +104,26 @@ def test_naive_and_backward_time_or_bad_closure_flag_rejected():
     assert report["error_counts"]["invalid_execution_fill"] == 1
     assert report["paired_closeout_reconciliation_verified"] is False
     assert report["error_counts"]["position_closed_flag_mismatch"] == 1
+
+
+def test_phase10_is_nested_in_existing_phase9_research_artifact():
+    from types import SimpleNamespace
+    from app.phase9_oos_fill_evidence import phase9_oos_fill_evidence
+
+    observed = _partial_closeouts()
+    fills = [item["fill"] for item in observed]
+    window = SimpleNamespace(
+        window=1, decision="TRADE", selected_strategy_id="candidate-a",
+        test_start="2026-01-02T09:30:00Z",
+        test_end="2026-01-02T16:00:00Z",
+        oos_fill_evidence={"source": "BacktestRunResult.trades", "recorded": True,
+                           "fills": fills},
+        oos_execution_costs={"fill_count": 3, "fees_paid": 2.0},
+    )
+    artifact = phase9_oos_fill_evidence(SimpleNamespace(windows=[window]))
+    assert artifact["oos_fill_coverage_verified"] is True
+    phase10 = artifact["phase10_closed_position_evidence"]
+    assert phase10["paired_closeout_reconciliation_verified"] is True
+    assert phase10["closed_position_count"] == 1
+    assert phase10["strategy_v8_hypothesis_ready"] is False
+    assert phase10["promotion_allowed"] is False

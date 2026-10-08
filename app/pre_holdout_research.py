@@ -33,6 +33,7 @@ from app.phase8_evidence_coverage import phase8_evidence_coverage
 from app.phase9_trade_ledger_audit import phase9_trade_ledger_audit
 from app.phase9_fold_ledger_integrity import phase9_fold_ledger_integrity
 from app.phase9_oos_fill_evidence import phase9_oos_fill_evidence
+from app.phase13_historical_regime import historical_regime_feed_from_env
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -576,8 +577,12 @@ def run_pre_holdout_research(
             )
             phase9_trade_ledger_audit_report = phase9_trade_ledger_audit(None)
             phase9_fold_ledger_integrity_report = phase9_fold_ledger_integrity(None, None)
+            historical_regime_source = historical_regime_feed_from_env(
+                research_end=research_bars[-1].timestamp
+            )
             phase9_oos_fill_evidence_report = phase9_oos_fill_evidence(
-                getattr(selection, "nested_walk_forward", None)
+                getattr(selection, "nested_walk_forward", None),
+                historical_regime_source=historical_regime_source,
             )
             sealed_holdout = {
                 "enabled": True,

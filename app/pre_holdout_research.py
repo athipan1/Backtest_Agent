@@ -32,6 +32,7 @@ from app.phase7_fold_root_causes import phase7_fold_root_causes
 from app.phase8_evidence_coverage import phase8_evidence_coverage
 from app.phase9_trade_ledger_audit import phase9_trade_ledger_audit
 from app.phase9_fold_ledger_integrity import phase9_fold_ledger_integrity
+from app.phase9_oos_fill_evidence import phase9_oos_fill_evidence
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -575,6 +576,9 @@ def run_pre_holdout_research(
             )
             phase9_trade_ledger_audit_report = phase9_trade_ledger_audit(None)
             phase9_fold_ledger_integrity_report = phase9_fold_ledger_integrity(None, None)
+            phase9_oos_fill_evidence_report = phase9_oos_fill_evidence(
+                getattr(selection, "nested_walk_forward", None)
+            )
             sealed_holdout = {
                 "enabled": True,
                 "status": "sealed_not_opened",
@@ -604,6 +608,7 @@ def run_pre_holdout_research(
                         "phase8_evidence_coverage": phase8_evidence_coverage_report,
                         "phase9_trade_ledger_audit": phase9_trade_ledger_audit_report,
                         "phase9_fold_ledger_integrity": phase9_fold_ledger_integrity_report,
+                        "phase9_oos_fill_evidence": phase9_oos_fill_evidence_report,
                         "statistical_evidence": None,
                         "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=None, selected_strategy_id=None),
                         "robustness_evidence": None,
@@ -651,6 +656,7 @@ def run_pre_holdout_research(
                         "phase8_evidence_coverage": phase8_evidence_coverage_report,
                         "phase9_trade_ledger_audit": phase9_trade_ledger_audit_report,
                         "phase9_fold_ledger_integrity": phase9_fold_ledger_integrity_report,
+                        "phase9_oos_fill_evidence": phase9_oos_fill_evidence_report,
                         "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                         "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=statistical_evidence.model_dump(mode="json"), selected_strategy_id=selected_strategy_id),
                         "robustness_evidence": robustness_evidence.model_dump(mode="json"),
@@ -748,6 +754,7 @@ def run_pre_holdout_research(
                         "phase8_evidence_coverage": phase8_evidence_coverage_report,
                         "phase9_trade_ledger_audit": phase9_trade_ledger_audit_report,
                         "phase9_fold_ledger_integrity": phase9_fold_ledger_integrity_report,
+                        "phase9_oos_fill_evidence": phase9_oos_fill_evidence_report,
                     "statistical_evidence": statistical_evidence.model_dump(mode="json"),
                     "phase5_statistical_attribution": phase5_statistical_failure_attribution(parameter_stability=parameter_stability, statistical_evidence=statistical_evidence.model_dump(mode="json"), selected_strategy_id=selected_strategy_id),
                     "robustness_evidence": robustness_evidence.model_dump(mode="json"),

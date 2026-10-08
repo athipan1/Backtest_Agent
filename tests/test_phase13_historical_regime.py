@@ -109,7 +109,8 @@ def test_naive_or_inverted_provenance_timestamp_fails_closed(tmp_path):
 
 def test_duplicate_provenance_ids_and_invalid_source_rejected(tmp_path):
     first = _observation()
-    second = _observation(oid="A", asof="2026-01-02T09:45:00Z")
+    second = _observation(oid="A", asof="2026-01-02T09:45:00Z",
+                          available="2026-01-02T09:50:00Z")
     assert _read(tmp_path, _payload([first, second]))["status"] == \
         "duplicate_historical_observation_id"
     invalid = _observation()

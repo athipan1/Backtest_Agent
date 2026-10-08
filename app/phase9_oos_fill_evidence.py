@@ -13,6 +13,10 @@ from typing import Any
 from app.phase10_closed_position_evidence import phase10_closed_position_evidence
 from app.phase11_trade_level_loss_attribution import phase11_trade_level_loss_attribution
 from app.phase12_execution_cost_regime_evidence import phase12_execution_cost_regime_evidence
+from app.phase13_historical_regime import (
+    bind_regime_at_entry,
+    phase13_v8_preparation,
+)
 
 
 def _aware_time(value: Any) -> datetime | None:
@@ -33,7 +37,9 @@ def _finite_number(value: Any, *, strictly_positive: bool = False) -> bool:
     )
 
 
-def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
+def phase9_oos_fill_evidence(
+    nested: Any, *, historical_regime_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Export observed OOS fills without rerunning or influencing the backtest."""
     windows = getattr(nested, "windows", None)
     if not isinstance(windows, list):
@@ -179,8 +185,17 @@ def phase9_oos_fill_evidence(nested: Any) -> dict[str, Any]:
     }
     phase10 = phase10_closed_position_evidence(evidence)
     evidence["phase10_closed_position_evidence"] = phase10
-    evidence["phase11_trade_level_loss_attribution"] = phase11_trade_level_loss_attribution(phase10)
-    evidence["phase12_execution_cost_regime_evidence"] = phase12_execution_cost_regime_evidence(
-        evidence, phase10
+    joined = bind_regime_at_entry(phase10, historical_regime_source)
+    matched = joined["matched_snapshots"] if joined["pit_join_contract_complete"] else None
+    evidence["phase11_trade_level_loss_attribution"] = phase11_trade_level_loss_attribution(
+        phase10, regime_observations=matched
+    )
+    phase12 = phase12_execution_cost_regime_evidence(
+        evidence, phase10, regime_snapshots=matched
+    )
+    evidence["phase12_execution_cost_regime_evidence"] = phase12
+    evidence["phase13_historical_regime_evidence"] = joined
+    evidence["phase13_strategy_research_v8_preparation"] = phase13_v8_preparation(
+        phase12, joined
     )
     return evidence

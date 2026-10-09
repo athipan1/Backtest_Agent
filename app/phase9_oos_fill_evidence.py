@@ -13,6 +13,7 @@ from typing import Any
 from app.phase10_closed_position_evidence import phase10_closed_position_evidence
 from app.phase11_trade_level_loss_attribution import phase11_trade_level_loss_attribution
 from app.phase12_execution_cost_regime_evidence import phase12_execution_cost_regime_evidence
+from app.phase14_historical_regime_validation import phase14_historical_regime_validation
 from app.phase13_historical_regime import (
     bind_regime_at_entry,
     phase13_v8_preparation,
@@ -197,5 +198,8 @@ def phase9_oos_fill_evidence(
     evidence["phase13_historical_regime_evidence"] = joined
     evidence["phase13_strategy_research_v8_preparation"] = phase13_v8_preparation(
         phase12, joined
+    )
+    evidence["phase14_historical_regime_validation"] = phase14_historical_regime_validation(
+        evidence, phase12, joined, historical_regime_source
     )
     return evidence

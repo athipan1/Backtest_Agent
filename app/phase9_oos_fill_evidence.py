@@ -14,6 +14,7 @@ from app.phase10_closed_position_evidence import phase10_closed_position_evidenc
 from app.phase11_trade_level_loss_attribution import phase11_trade_level_loss_attribution
 from app.phase12_execution_cost_regime_evidence import phase12_execution_cost_regime_evidence
 from app.phase14_historical_regime_validation import phase14_historical_regime_validation
+from app.phase15_independent_evidence import phase15_v8_evidence_validation
 from app.phase13_historical_regime import (
     bind_regime_at_entry,
     phase13_v8_preparation,
@@ -40,6 +41,7 @@ def _finite_number(value: Any, *, strictly_positive: bool = False) -> bool:
 
 def phase9_oos_fill_evidence(
     nested: Any, *, historical_regime_source: dict[str, Any] | None = None,
+    phase15_documents: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Export observed OOS fills without rerunning or influencing the backtest."""
     windows = getattr(nested, "windows", None)
@@ -199,7 +201,11 @@ def phase9_oos_fill_evidence(
     evidence["phase13_strategy_research_v8_preparation"] = phase13_v8_preparation(
         phase12, joined
     )
-    evidence["phase14_historical_regime_validation"] = phase14_historical_regime_validation(
+    phase14 = phase14_historical_regime_validation(
         evidence, phase12, joined, historical_regime_source
+    )
+    evidence["phase14_historical_regime_validation"] = phase14
+    evidence["phase15_independent_evidence"] = phase15_v8_evidence_validation(
+        evidence, joined, phase14, historical_regime_source, phase15_documents
     )
     return evidence

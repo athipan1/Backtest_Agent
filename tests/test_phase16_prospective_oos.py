@@ -103,7 +103,7 @@ def test_complete_forward_matrix_is_arithmetic_consistent_but_not_verified_profi
     assert result["prospective_packet_contract_consistent"] is True
     assert result["validated_forward_fold_count"] == 3
     assert result["registered_hypothesis_count"] == 2
-    trade, cash = result["fold_hypothesis_diagnostics"]
+    cash, trade = result["fold_hypothesis_diagnostics"]
     # Sorted alphabetically by hypothesis id.
     assert cash["hypothesis_id"] == "breakout-bear"
     assert cash["cash_abstention_fold_count"] == 3

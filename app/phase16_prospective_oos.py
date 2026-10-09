@@ -197,14 +197,14 @@ def phase16_prospective_oos_evidence(
         if any(not _number(row.get(k)) for k in numbers):
             reasons.add("missing_or_nonfinite_forward_cost")
             continue
+        if (decision == "NO_TRADE" and any(abs(row[k]) > 1e-9 for k in numbers)
+                or decision == "TRADE" and not _str(row.get("trade_ledger_fingerprint"))):
+            reasons.add("cash_abstention_or_trade_ledger_evidence_invalid")
+            continue
         gross, net = row["reference_price_gross_pnl"], row["simulated_net_pnl"]
         costs = sum(row[k] for k in COSTS)
         if any(row[k] < 0 for k in COSTS) or abs(gross - costs - net) > 0.015:
             reasons.add("forward_gross_cost_net_reconciliation_failed")
-            continue
-        if (decision == "NO_TRADE" and any(abs(row[k]) > 1e-9 for k in numbers)
-                or decision == "TRADE" and not _str(row.get("trade_ledger_fingerprint"))):
-            reasons.add("cash_abstention_or_trade_ledger_evidence_invalid")
             continue
         group = by_hypothesis[hid]
         group["fold_count"] += 1

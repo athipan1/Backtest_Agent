@@ -2,6 +2,12 @@ name: Strategy Research v7
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_research_evidence:
+        description: 'Storage-only Phase13–16 summary in Database_Agent; never trades'
+        required: false
+        default: false
+        type: boolean
   pull_request:
     paths:
       - 'app/pre_holdout_research.py'
@@ -104,6 +110,10 @@ jobs:
               handle.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
           PY
       - name: Run sealed Strategy Research v7
+        env:
+          BACKTEST_RESEARCH_EVIDENCE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && 'true' || 'false' }}
+          DATABASE_AGENT_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && secrets.DATABASE_AGENT_URL || '' }}
+          DATABASE_AGENT_API_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && secrets.DATABASE_AGENT_API_KEY || '' }}
         run: python scripts/run_research_candidate_profile.py
       - name: Verify v7 safety controls
         run: |

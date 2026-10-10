@@ -36,6 +36,7 @@ from app.phase9_oos_fill_evidence import phase9_oos_fill_evidence
 from app.phase13_historical_regime import historical_regime_feed_from_env
 from app.phase15_independent_evidence import phase15_documents_from_env
 from app.phase16_prospective_oos import prospective_oos_document_from_env
+from app.phase17_research_storage import publish_research_report_if_enabled
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -834,5 +835,6 @@ def run_pre_holdout_research(
         },
         "error": None if not failed else "One or more research symbols failed operationally.",
     }
+    output["data"]["phase17_research_storage"] = publish_research_report_if_enabled(output)
     _write_reports(report_path, output)
     return output

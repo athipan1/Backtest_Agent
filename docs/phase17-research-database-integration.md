@@ -23,3 +23,9 @@ The **existing** `.github/workflows/strategy-research-v7.yml` now exposes a `wor
 The research-only report verifies `phase17_research_storage.stored_count` and individual `evidence_id` values. Independently GET an ID from `/research/evidence/{evidence_id}` with the existing API key and compare the immutable hash and `promotion_allowed=false`. No stored research record can bypass existing BUY, Risk, Backtest, exposure, emergency halt, duplication, or broker reconciliation checks.
 
 Do **not** enable the checkbox while Database_Agent migration/deployment is pending. Never use `PUBLISH_TO_DATABASE=true` to force this workflow.
+
+## Phase 18: Read-back integrity verification (existing research lane)
+
+For each explicitly opted-in Phase 17 research evidence publication, the Backtest_Agent now performs an authenticated `GET /research/evidence/{evidence_id}` after the successful POST. A report counts as verified only when the stored immutable payload is byte-canonically equivalent to the original bounded research document, its SHA-256 identity matches, original symbol/profile/artifact hash agree, and both payload and response independently deny trading or promotion. HTTP failures, 404, malformed responses and mismatched payloads fail closed without an automatic POST retry.
+
+The research report contains `phase17_research_storage.readback_verified_count` and per-record `readback_verified=true`. These are storage-integrity indicators only, **not** forward-OOS profitability or permission to execute. A manually dispatched, explicitly opted-in rerun of the existing v7 workflow can exercise immutable replay and authenticated read-back; never enable publication on PR runs or change `PUBLISH_TO_DATABASE=false`.

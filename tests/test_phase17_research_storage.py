@@ -104,13 +104,41 @@ def test_publisher_requires_url_and_key_and_never_calls_broker(monkeypatch):
             "metadata": {"idempotent_replay": False},
         }, request=httpx.Request("POST", url))
 
+    get_calls = []
+
+    def fake_get(url, *, headers, timeout):
+        get_calls.append((url, headers, timeout))
+        document = called[-1][1]
+        payload = {k: v for k, v in document.items() if k != "evidence_id"}
+        return httpx.Response(200, json={
+            "status": "success",
+            "schema_version": "phase17-research-evidence.v1",
+            "data": {
+                "evidence_id": document["evidence_id"],
+                "symbol": document["symbol"],
+                "research_profile": document["research_profile"],
+                "artifact_sha256": document["artifact_sha256"],
+                "payload": payload, "research_only": True,
+                "promotion_allowed": False, "execution_allowed": False,
+            },
+            "metadata": {
+                "safe_for_trading": False,
+                "promotion_allowed": False, "execution_allowed": False,
+            },
+        }, request=httpx.Request("GET", url))
+
     monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", fake_get)
     result = publish_research_evidence(
         _item(), profile_id="strategy_research_v7",
         base_url="https://research.example.com", api_key="test-secret",
     )
     assert result["stored"] is True
+    assert result["readback_verified"] is True
     assert result["promotion_allowed"] is False
+    assert len(get_calls) == 1
+    assert get_calls[0][0].endswith("/research/evidence/" + result["evidence_id"])
+    assert get_calls[0][1]["X-API-KEY"] == "test-secret"
     assert len(called) == 1
     assert called[0][0] == "https://research.example.com/research/evidence"
     assert called[0][2]["X-API-KEY"] == "test-secret"
@@ -167,7 +195,7 @@ def test_opt_in_report_stores_only_safe_diagnostics(monkeypatch):
 
     def fake_publish(item, *, profile_id):
         captured.append((item["symbol"], profile_id))
-        return {"stored": True, "evidence_id": "a" * 64}
+        return {"stored": True, "readback_verified": True, "evidence_id": "a" * 64}
 
     monkeypatch.setattr(
         "app.phase17_research_storage.publish_research_evidence", fake_publish
@@ -176,6 +204,7 @@ def test_opt_in_report_stores_only_safe_diagnostics(monkeypatch):
     output = _output()
     result = publish_research_report_if_enabled(output)
     assert result["stored_count"] == 1
+    assert result["readback_verified_count"] == 1
     assert result["promotion_allowed"] is False
     assert captured == [("AAPL", "strategy_research_v7")]
     assert output["data"]["database_publish_allowed"] is False
@@ -201,3 +230,74 @@ def test_failed_research_symbol_is_not_fabricated_as_evidence(monkeypatch):
     result = publish_research_report_if_enabled(report)
     assert result["stored_count"] == 0
     assert result["skipped"][0]["reason"] == "failed_research"
+
+
+def test_readback_rejects_modified_payload_without_marking_stored(monkeypatch):
+    requests = []
+
+    def fake_post(url, *, json, headers, timeout):
+        requests.append(("POST", url))
+        return httpx.Response(201, json={
+            "status": "success",
+            "data": {
+                "evidence_id": json["evidence_id"],
+                "artifact_sha256": json["artifact_sha256"],
+                "promotion_allowed": False, "execution_allowed": False,
+            },
+        }, request=httpx.Request("POST", url))
+
+    def fake_get(url, *, headers, timeout):
+        requests.append(("GET", url))
+        return httpx.Response(200, json={
+            "status": "success",
+            "schema_version": "phase17-research-evidence.v1",
+            "data": {
+                "evidence_id": url.rsplit("/", 1)[-1],
+                "symbol": "AAPL", "research_profile": "strategy_research_v7",
+                "artifact_sha256": "0" * 64,
+                "payload": {}, "research_only": True,
+                "promotion_allowed": False, "execution_allowed": False,
+            },
+            "metadata": {
+                "safe_for_trading": False,
+                "promotion_allowed": False, "execution_allowed": False,
+            },
+        }, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    with pytest.raises(RuntimeError, match="readback"):
+        publish_research_evidence(
+            _item(), profile_id="strategy_research_v7",
+            base_url="https://research.example.com", api_key="test-secret",
+        )
+    assert [method for method, _ in requests] == ["POST", "GET"]
+
+
+def test_readback_http_failure_is_fail_closed_without_retry(monkeypatch):
+    methods = []
+
+    def fake_post(url, *, json, headers, timeout):
+        methods.append("POST")
+        return httpx.Response(201, json={
+            "status": "success",
+            "data": {
+                "evidence_id": json["evidence_id"],
+                "artifact_sha256": json["artifact_sha256"],
+                "promotion_allowed": False, "execution_allowed": False,
+            },
+        }, request=httpx.Request("POST", url))
+
+    def fake_get(url, *, headers, timeout):
+        methods.append("GET")
+        return httpx.Response(503, json={"error": "unavailable"},
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    with pytest.raises(httpx.HTTPStatusError):
+        publish_research_evidence(
+            _item(), profile_id="strategy_research_v7",
+            base_url="https://research.example.com", api_key="test-secret",
+        )
+    assert methods == ["POST", "GET"]

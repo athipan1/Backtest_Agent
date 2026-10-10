@@ -81,6 +81,47 @@ def build_research_evidence(item: dict[str, Any], *, profile_id: str) -> dict[st
     return {"evidence_id": _sha(document), **document}
 
 
+def verify_research_evidence_readback(
+    document: dict[str, Any], *, url: str, key: str,
+) -> None:
+    """Require independent authenticated GET and exact immutable round-trip.
+
+    This reads diagnostic-only research storage. It cannot authorize selection,
+    production publication, broker execution, or opening a sealed holdout.
+    """
+    evidence_id = document["evidence_id"]
+    response = httpx.get(
+        f"{url}/research/evidence/{evidence_id}",
+        headers={"X-API-KEY": key, "X-Correlation-ID": evidence_id},
+        timeout=30,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("Database_Agent research readback has invalid response")
+    stored = body.get("data")
+    metadata = body.get("metadata")
+    original = {k: v for k, v in document.items() if k != "evidence_id"}
+    if (body.get("status") != "success"
+            or body.get("schema_version") != "phase17-research-evidence.v1"
+            or not isinstance(stored, dict)
+            or not isinstance(metadata, dict)
+            or stored.get("evidence_id") != evidence_id
+            or stored.get("symbol") != document["symbol"]
+            or stored.get("research_profile") != document["research_profile"]
+            or stored.get("artifact_sha256") != document["artifact_sha256"]
+            or stored.get("payload") != original
+            or stored.get("research_only") is not True
+            or stored.get("promotion_allowed") is not False
+            or stored.get("execution_allowed") is not False
+            or metadata.get("safe_for_trading") is not False
+            or metadata.get("promotion_allowed") is not False
+            or metadata.get("execution_allowed") is not False):
+        raise RuntimeError("Database_Agent research readback does not match immutable evidence")
+    if _sha(stored["payload"]) != evidence_id:
+        raise RuntimeError("Database_Agent research readback digest mismatch")
+
+
 def publish_research_evidence(
     item: dict[str, Any], *, profile_id: str,
     base_url: str | None = None, api_key: str | None = None,
@@ -105,10 +146,11 @@ def publish_research_evidence(
             or stored.get("promotion_allowed") is not False
             or stored.get("execution_allowed") is not False):
         raise RuntimeError("Database_Agent research evidence acknowledgment does not match")
+    verify_research_evidence_readback(document, url=url, key=key)
     return {
         "evidence_id": document["evidence_id"],
         "artifact_sha256": document["artifact_sha256"],
-        "stored": True,
+        "stored": True, "readback_verified": True,
         "diagnostic_only": True, "promotion_allowed": False, "execution_allowed": False,
         "idempotent_replay": body.get("metadata", {}).get("idempotent_replay") is True,
     }
@@ -144,6 +186,8 @@ def publish_research_report_if_enabled(output: dict[str, Any]) -> dict[str, Any]
         stored.append(publish_research_evidence(item, profile_id=profile_id))
     return {
         "enabled": True, "status": "stored" if stored else "no_eligible_research",
-        "stored_count": len(stored), "skipped": skipped, "records": stored,
+        "stored_count": len(stored),
+        "readback_verified_count": sum(row.get("readback_verified") is True for row in stored),
+        "skipped": skipped, "records": stored,
         "promotion_allowed": False, "execution_allowed": False,
     }

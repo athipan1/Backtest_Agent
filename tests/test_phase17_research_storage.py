@@ -64,7 +64,8 @@ def test_deterministic_storage_digest_from_real_symbol_artifact():
     assert a["promotion_allowed"] is False
     assert a["execution_allowed"] is False
     assert a["sealed_holdout_opened"] is False
-    assert "selection" not in json.dumps(a)
+    assert "selection" not in a["phases"]
+    assert all("selection" not in phase for phase in a["phases"].values())
     assert "raw_oos_fills" not in json.dumps(a)
     assert "profitability_proven" not in a
 

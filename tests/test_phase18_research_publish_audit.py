@@ -1,6 +1,4 @@
 """Phase 18 CI requires complete, safe, immutable read-back evidence."""
-import copy
-
 from app.phase18_research_publish_audit import phase18_storage_checks
 
 

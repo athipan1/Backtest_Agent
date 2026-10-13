@@ -99,6 +99,7 @@ def test_future_regime_availability_does_not_leak_across_training_boundary():
 
 def test_stale_regime_and_duplicate_availability_abstain():
     stale = _feed(available="2025-12-31T15:00:00Z")
+    stale["observations"][0]["regime_asof_timestamp"] = "2025-12-31T14:00:00Z"
     assert _plan(stale)["window_plans"][0]["observation"]["reason"] == (
         "historical_regime_stale"
     )

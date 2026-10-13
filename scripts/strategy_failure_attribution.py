@@ -52,6 +52,52 @@ def build_failure_attribution(report: dict[str, Any]) -> dict[str, Any]:
                 "evaluated_windows": nested.get("evaluated_windows"),
             })
 
+    # Summarize the actual best candidate for each symbol even when no
+    # strategy is eligible. Research observations never alter selection gates.
+    symbol_diagnostics: list[dict[str, Any]] = []
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        selection = item.get("selection") or {}
+        best = selection.get("best_overall") or {}
+        if not isinstance(best, dict):
+            best = {}
+        nested = selection.get("nested_walk_forward") or {}
+        if not isinstance(nested, dict):
+            nested = {}
+        criteria = selection.get("walk_forward_criteria") or {}
+        if not isinstance(criteria, dict):
+            criteria = {}
+        reasons = list(best.get("disqualification_reasons") or [])
+        window_metrics = (
+            "profitable_window_rate", "median_sharpe_ratio",
+            "median_profit_factor", "worst_max_drawdown",
+            "evaluated_windows",
+        )
+        symbol_diagnostics.append({
+            "symbol": item.get("symbol"),
+            "status": item.get("status"),
+            "best_candidate_id": best.get("strategy_id"),
+            "best_candidate_family": _family(best) if best else None,
+            "selected_strategy_id": item.get("selected_strategy_id"),
+            "nested_oos": {key: nested.get(key) for key in window_metrics},
+            "nested_failed_gates": sorted(
+                name for name, passed in (nested.get("gates") or {}).items()
+                if passed is False
+            ),
+            "registered_walk_forward_criteria": {
+                key: criteria.get(key) for key in sorted(criteria)
+            },
+            "disqualification_reasons": reasons,
+            "assumed_execution_cost_bps": {
+                name: (best.get("effective_parameters") or {}).get(name)
+                for name in ("fee_bps", "slippage_bps", "market_impact_bps")
+            },
+            "next_experiment": "retest_stability_on_unseen_nested_windows",
+            "trade_authorized": False,
+            "sealed_holdout_opened": False,
+        })
+
     statistical_failures = []
     for item in data.get("items") or []:
         evidence = item.get("statistical_evidence") or {}
@@ -79,6 +125,7 @@ def build_failure_attribution(report: dict[str, Any]) -> dict[str, Any]:
             family: dict(counts.most_common()) for family, counts in sorted(family_counts.items())
         },
         "candidate_rows": rows,
+        "symbol_diagnostics": symbol_diagnostics,
         "statistical_failures": statistical_failures,
         "diagnostic_only": True,
         "thresholds_changed": False,

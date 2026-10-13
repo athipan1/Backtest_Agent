@@ -9,6 +9,7 @@ BULL_RESEARCH_PROFILE_ID: Final[str] = "bull_research_v1"
 STRATEGY_RESEARCH_V5_PROFILE_ID: Final[str] = "strategy_research_v5"
 STRATEGY_RESEARCH_V6_PROFILE_ID: Final[str] = "strategy_research_v6"
 STRATEGY_RESEARCH_V7_PROFILE_ID: Final[str] = "strategy_research_v7"
+STRATEGY_RESEARCH_V8_PROFILE_ID: Final[str] = "strategy_research_v8"
 
 
 def bull_research_v1_candidates() -> list[MultiStrategyCandidate]:
@@ -223,6 +224,49 @@ def strategy_research_v7_candidates() -> list[MultiStrategyCandidate]:
     ]
 
 
+
+def strategy_research_v8_candidates() -> list[MultiStrategyCandidate]:
+    """Pre-register a sparse, fixed v8 suite BEFORE running out-of-sample trials.
+
+    The first four are unchanged baseline controls. No inference from later
+    nested OOS, market regime labels, or sealed holdout changes parameters.
+    Every candidate must still pass the existing statistical, nested, PBO,
+    cost and risk gates. v8 is research only.
+    """
+    controls = strategy_research_v5_candidates()[:4]
+    return [
+        *controls,
+        MultiStrategyCandidate(
+            strategy_id="trend-following-30-90-risk-v8",
+            name="v8 trend 30/90 capped",
+            strategy="trend_following",
+            fast_window=30, slow_window=90,
+            max_position_pct=0.04, stop_loss_pct=0.035, reward_risk_ratio=2.5,
+        ),
+        MultiStrategyCandidate(
+            strategy_id="sma-crossover-15-60-risk-v8",
+            name="v8 SMA 15/60 capped",
+            strategy="sma_crossover",
+            fast_window=15, slow_window=60,
+            max_position_pct=0.04, stop_loss_pct=0.035, reward_risk_ratio=2.5,
+        ),
+        MultiStrategyCandidate(
+            strategy_id="breakout-15-55-risk-v8",
+            name="v8 breakout 15/55 capped",
+            strategy="breakout",
+            fast_window=15, slow_window=55,
+            max_position_pct=0.04, stop_loss_pct=0.035, reward_risk_ratio=2.5,
+        ),
+        MultiStrategyCandidate(
+            strategy_id="mean-reversion-6-25-risk-v8",
+            name="v8 reversion 6/25 capped",
+            strategy="mean_reversion",
+            fast_window=6, slow_window=25,
+            max_position_pct=0.04, stop_loss_pct=0.025, reward_risk_ratio=2.0,
+        ),
+    ]
+
+
 def research_profile(profile_id: str) -> list[MultiStrategyCandidate]:
     normalized = profile_id.strip().lower()
     if normalized == BULL_RESEARCH_PROFILE_ID:
@@ -233,4 +277,6 @@ def research_profile(profile_id: str) -> list[MultiStrategyCandidate]:
         return strategy_research_v6_candidates()
     if normalized == STRATEGY_RESEARCH_V7_PROFILE_ID:
         return strategy_research_v7_candidates()
+    if normalized == STRATEGY_RESEARCH_V8_PROFILE_ID:
+        return strategy_research_v8_candidates()
     raise ValueError(f"Unknown research candidate profile: {profile_id}")

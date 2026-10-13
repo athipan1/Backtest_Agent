@@ -1,8 +1,16 @@
-name: Strategy Research v7
+name: Strategy Research v7/v8 (sealed pre-holdout)
 
 on:
   workflow_dispatch:
     inputs:
+      research_profile:
+        description: 'v7 baseline or preregistered v8 research only; never grants trading permission'
+        required: true
+        type: choice
+        options:
+          - strategy_research_v7
+          - strategy_research_v8
+        default: strategy_research_v7
       publish_research_evidence:
         description: 'Storage-only Phase13–16 summary in Database_Agent; never trades'
         required: false
@@ -13,6 +21,9 @@ on:
       - 'app/pre_holdout_research.py'
       - 'app/parameter_stability.py'
       - 'app/research_candidate_profiles.py'
+      - 'app/adaptive_research_v8.py'
+      - 'tests/test_adaptive_research_v8.py'
+      - 'app/research_trial_registry.py'
       - 'app/research_overfit.py'
       - 'app/research_trial_registry.py'
       - 'scripts/run_research_candidate_profile.py'
@@ -27,7 +38,7 @@ permissions:
 
 env:
   PYTHONPATH: .
-  BACKTEST_RESEARCH_PROFILE: strategy_research_v7
+  BACKTEST_RESEARCH_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.research_profile == 'strategy_research_v8' && 'strategy_research_v8' || 'strategy_research_v7' }}
   BACKTEST_MAX_SYMBOLS: '10'
   BACKTEST_TIMEFRAME: '1d'
   BACKTEST_BAR_LIMIT: '10000'
@@ -68,7 +79,7 @@ env:
 
 jobs:
   pre-holdout-research:
-    name: Scanner Top-10 sealed v7 research
+    name: Scanner Top-10 sealed v7/v8 research
     runs-on: ubuntu-latest
     timeout-minutes: 120
     concurrency:
@@ -111,13 +122,13 @@ jobs:
           with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as handle:
               handle.write('BACKTEST_SYMBOLS=' + ','.join(symbols) + '\n')
           PY
-      - name: Run sealed Strategy Research v7
+      - name: Run sealed Strategy Research v7/v8
         env:
           BACKTEST_RESEARCH_EVIDENCE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && 'true' || 'false' }}
           DATABASE_AGENT_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && secrets.DATABASE_AGENT_URL || '' }}
           DATABASE_AGENT_API_KEY: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && secrets.DATABASE_AGENT_API_KEY || '' }}
         run: python scripts/run_research_candidate_profile.py
-      - name: Verify v7 safety controls
+      - name: Verify sealed research safety controls v7/v8
         env:
           BACKTEST_RESEARCH_EVIDENCE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_research_evidence && 'true' || 'false' }}
         run: |
@@ -132,9 +143,17 @@ jobs:
           failures=[]
           checks={
             'success': report.get('status') == 'success',
-            'v7': profile.get('profile_id') == 'strategy_research_v7',
+            'profile_known': profile.get('profile_id') in ('strategy_research_v7', 'strategy_research_v8'),
+            'profile_expected': profile.get('profile_id') == os.environ['BACKTEST_RESEARCH_PROFILE'],
             'candidate_count': profile.get('candidate_count') == 8,
-            'trials': profile.get('statistical_trial_count') == 18,
+            'trials': profile.get('statistical_trial_count') == (22 if os.environ['BACKTEST_RESEARCH_PROFILE'] == 'strategy_research_v8' else 18),
+            'v8_plans_non_authoritative': all(
+                (item.get('adaptive_v8_research_plan') or {}).get('promotion_allowed') is False
+                and (item.get('adaptive_v8_research_plan') or {}).get('execution_allowed') is False
+                and (item.get('adaptive_v8_research_plan') or {}).get('sealed_holdout_opened') is False
+                and (item.get('adaptive_v8_research_plan') or {}).get('regime_driven_strategy_selection_enabled') is False
+                for item in data.get('items') or [] if item.get('status') != 'failed'
+            ) if os.environ['BACKTEST_RESEARCH_PROFILE'] == 'strategy_research_v8' else True,
             'holdout_closed': data.get('holdout_opened_count') == 0,
             'database_disabled': data.get('database_publish_allowed') is False,
             'promotion_disabled': data.get('promotion_allowed') is False,
@@ -148,13 +167,13 @@ jobs:
           evidence={'checks':checks,'pre_holdout_candidate_symbols':data.get('pre_holdout_candidate_symbols') or [],'failed_symbols':data.get('failed_symbols') or [],'holdout_opened_count':data.get('holdout_opened_count')}
           Path('reports/strategy-research-v7-evidence.json').write_text(json.dumps(evidence, indent=2, sort_keys=True))
           if failures:
-              raise SystemExit('v7 verification failed: '+', '.join(failures))
+              raise SystemExit('sealed research verification failed: '+', '.join(failures))
           PY
-      - name: Upload Strategy Research v7 evidence
+      - name: Upload sealed Strategy Research v7/v8 evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
-          name: strategy-research-v7-${{ github.run_id }}
+          name: strategy-research-v7-v8-${{ github.run_id }}
           path: reports/
           if-no-files-found: error
           retention-days: 30

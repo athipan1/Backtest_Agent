@@ -15,6 +15,7 @@ from app.nested_validation_v4 import (
 from app.research_candidate_profiles import (
     STRATEGY_RESEARCH_V6_PROFILE_ID,
     STRATEGY_RESEARCH_V7_PROFILE_ID,
+    STRATEGY_RESEARCH_V8_PROFILE_ID,
     research_profile,
 )
 from app.research_overfit import PBOCriteria, run_cscv_pbo
@@ -37,6 +38,7 @@ from app.phase13_historical_regime import historical_regime_feed_from_env
 from app.phase15_independent_evidence import phase15_documents_from_env
 from app.phase16_prospective_oos import prospective_oos_document_from_env
 from app.phase17_research_storage import publish_research_report_if_enabled
+from app.adaptive_research_v8 import build_adaptive_v8_research_plan
 
 
 EXPECTED_PRE_HOLDOUT_REJECTIONS: tuple[tuple[str, str], ...] = (
@@ -502,6 +504,7 @@ def run_pre_holdout_research(
     pbo_required = profile_id in {
         STRATEGY_RESEARCH_V6_PROFILE_ID,
         STRATEGY_RESEARCH_V7_PROFILE_ID,
+        STRATEGY_RESEARCH_V8_PROFILE_ID,
     }
     symbols = promotion._symbols_from_env()
     timeframe = os.getenv("BACKTEST_TIMEFRAME", "1d")
@@ -591,6 +594,16 @@ def run_pre_holdout_research(
                 research_end=research_bars[-1].timestamp,
                 reserved_holdout_end=sealed_holdout_bars[-1].timestamp,
             )
+            adaptive_v8_plan = (
+                build_adaptive_v8_research_plan(
+                    symbol=symbol,
+                    nested_selection=selection.nested_walk_forward,
+                    historical_feed=historical_regime_source,
+                    research_end=research_bars[-1].timestamp.isoformat(),
+                    cumulative_trials=int(profile["statistical_trial_count"]),
+                )
+                if profile_id == STRATEGY_RESEARCH_V8_PROFILE_ID else None
+            )
             sealed_holdout = {
                 "enabled": True,
                 "status": "sealed_not_opened",
@@ -609,6 +622,7 @@ def run_pre_holdout_research(
                         "rejection_reason": "no candidate passed nested v4 selection",
                         "research_dataset_fingerprint": research_fingerprint,
                         "trial_registry": trial_registry,
+                        "adaptive_v8_research_plan": adaptive_v8_plan,
                         "pbo_evidence": (
                             pbo_evidence.model_dump(mode="json") if pbo_evidence else None
                         ),
@@ -659,6 +673,7 @@ def run_pre_holdout_research(
                         "rejection_reason": "CSCV Probability of Backtest Overfitting gate did not pass",
                         "research_dataset_fingerprint": research_fingerprint,
                         "trial_registry": trial_registry,
+                        "adaptive_v8_research_plan": adaptive_v8_plan,
                         "pbo_evidence": pbo_evidence.model_dump(mode="json"),
                         "cost_stress_evidence": None,
                         "selection": selection.model_dump(mode="json"),
@@ -694,6 +709,7 @@ def run_pre_holdout_research(
                         "rejection_reason": "Selected strategy failed conservative transaction-cost stress",
                         "research_dataset_fingerprint": research_fingerprint,
                         "trial_registry": trial_registry,
+                        "adaptive_v8_research_plan": adaptive_v8_plan,
                         "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
                         "cost_stress_evidence": cost_stress_evidence,
                         "selection": selection.model_dump(mode="json"),
@@ -730,6 +746,7 @@ def run_pre_holdout_research(
                         "rejection_reason": str(exc),
                         "research_dataset_fingerprint": research_fingerprint,
                         "trial_registry": trial_registry,
+                        "adaptive_v8_research_plan": adaptive_v8_plan,
                         "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
                         "cost_stress_evidence": cost_stress_evidence,
                         "selection": selection.model_dump(mode="json"),
@@ -757,6 +774,7 @@ def run_pre_holdout_research(
                     "rejection_reason": None,
                     "research_dataset_fingerprint": research_fingerprint,
                     "trial_registry": trial_registry,
+                    "adaptive_v8_research_plan": adaptive_v8_plan,
                     "pbo_evidence": pbo_evidence.model_dump(mode="json") if pbo_evidence else None,
                     "cost_stress_evidence": cost_stress_evidence,
                     "selection": selection.model_dump(mode="json"),

@@ -52,6 +52,8 @@ def test_future_indicators_are_rejected():
 def test_unsorted_and_naive_timestamps_fail_closed():
     sample = rows()
     sample[4]["timestamp"] = sample[3]["timestamp"]
+    sample[4]["indicators_as_of"] = sample[3]["timestamp"]
+    sample[4]["regime_as_of"] = sample[3]["timestamp"]
     with pytest.raises(ValueError, match="chronological"):
         validate_pit_rows(sample)
     sample = rows()

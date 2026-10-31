@@ -87,3 +87,30 @@ def test_research_holdout_overlap_is_rejected():
     doc["research_end"] = doc["sealed_holdout_start"]
     with pytest.raises(ValueError, match="research_holdout_overlap"):
         replay(doc)
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    (lambda d: d.update(schema_version="wrong"), "unknown_archive_schema"),
+    (lambda d: d.update(records=[]), "empty_research_archive"),
+    (lambda d: d["records"][0].update(symbol="NOT_LAUR"), "unknown_research_symbol"),
+    (lambda d: d["records"][0].update(source_observation_id=""), "missing_source_observation_id"),
+    (lambda d: d["records"][0].update(regime_available_at="2030-01-01T00:00:00Z"), "future_research_publication"),
+    (lambda d: d.update(research_end="2024-01-01"), "naive_timestamp"),
+])
+def test_malformed_or_unverifiable_archive_fails_closed(mutation, reason):
+    doc = archive()
+    mutation(doc)
+    with pytest.raises(ValueError, match=reason):
+        replay(doc)
+
+
+def test_short_archived_symbol_remains_unqualified():
+    doc = archive()
+    doc["records"] = [
+        row for row in doc["records"]
+        if row["symbol"] == "LAUR" or row["source_observation_id"] == "JFIN-0"
+    ]
+    result = replay(doc)
+    assert result["symbols"]["JFIN"]["status"] == "insufficient_history"
+    assert result["symbols"]["JFIN"]["fold_count"] == 0
+    assert result["production_certified"] is False

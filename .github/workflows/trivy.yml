@@ -64,8 +64,8 @@ jobs:
 
           expected = {
               "jaraco.context": "6.1.0",
-              "msgpack": "1.2.1",
-              "setuptools": "83.0.0",
+              "msgpack": "1.2.3",
+              "setuptools": "84.1.0",
               "wheel": "0.46.2",
           }
           for package, expected_version in expected.items():
@@ -88,8 +88,8 @@ jobs:
 
           test -f rootfs/etc/os-release
           grep -q '^ID=debian$' rootfs/etc/os-release
-          test -d rootfs/opt/venv/lib/python3.12/site-packages/msgpack-1.2.1.dist-info
-          test -d rootfs/opt/venv/lib/python3.12/site-packages/setuptools-83.0.0.dist-info
+          test -d rootfs/opt/venv/lib/python3.12/site-packages/msgpack-1.2.3.dist-info
+          test -d rootfs/opt/venv/lib/python3.12/site-packages/setuptools-84.1.0.dist-info
 
           stale_metadata="$(find rootfs -type d \( \
             -name 'msgpack-1.1.2.dist-info' -o \

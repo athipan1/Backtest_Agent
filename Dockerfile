@@ -65,8 +65,8 @@ from importlib.metadata import version
 
 expected = {
     "jaraco.context": "6.1.0",
-    "msgpack": "1.2.1",
-    "setuptools": "83.0.0",
+    "msgpack": "1.2.3",
+    "setuptools": "84.1.0",
     "wheel": "0.46.2",
 }
 for package, expected_version in expected.items():

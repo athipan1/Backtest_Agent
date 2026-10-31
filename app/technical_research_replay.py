@@ -60,6 +60,9 @@ def validate_pit_rows(rows: list[dict[str, Any]]) -> None:
         observed = _instant(row.get("indicators_as_of"))
         if observed > timestamp:
             raise ValueError("look_ahead_indicator_timestamp")
+        regime_observed = _instant(row.get("regime_as_of"))
+        if regime_observed > timestamp:
+            raise ValueError("look_ahead_regime_timestamp")
         if previous is not None and timestamp <= previous:
             raise ValueError("bars_not_strictly_chronological")
         previous = timestamp

@@ -15,6 +15,7 @@ def rows(count=24):
         {
             "timestamp": start + timedelta(days=i),
             "indicators_as_of": start + timedelta(days=i),
+            "regime_as_of": start + timedelta(days=i),
             "open": float(100 + i),
             "close": 105.0,
             "sma200": 100.0,
@@ -99,3 +100,10 @@ def test_no_training_edge_abstains_instead_of_trading():
     assert report["fold_count"] > 0
     assert all(fold["abstained"] for fold in report["folds"])
     assert all(fold["test_metrics"]["trade_count"] == 0 for fold in report["folds"])
+
+
+def test_future_regime_labels_are_rejected():
+    sample = rows()
+    sample[4]["regime_as_of"] += timedelta(days=1)
+    with pytest.raises(ValueError, match="look_ahead_regime_timestamp"):
+        validate_pit_rows(sample)
